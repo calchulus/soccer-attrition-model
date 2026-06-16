@@ -191,6 +191,7 @@ let dummiesPlayed = 0;
 let passLines = [];
 let dummyLines = [];
 let lastPassTime = 0;
+let lastPassGameTime = 0;
 let wallWarnings = {};
 let events = [];
 let subsRemaining = 5;
@@ -279,7 +280,7 @@ function markTargets() {
 
 function addFatigue(player, amount) {
   if (player.subbed) return;
-  const bonus = player.targeted ? 1.8 : 1.0;
+  const bonus = player.targeted ? 1.5 : 1.0;
   player.fatigue = Math.min(100, player.fatigue + amount * bonus);
   if (player.fatigue >= 85 && !wallWarnings[player.id]) {
     wallWarnings[player.id] = gameMinute;
@@ -360,11 +361,11 @@ function defenderReaction(defender, ballPos, reactionType) {
   
   if (Math.random() < reaction.sprintChance) {
     moveToward(defender, targetX, targetY, 7);
-    addFatigue(defender, 0.4 * reaction.fatigueMod);
+    addFatigue(defender, 0.15 * reaction.fatigueMod);
     defender.sprints++;
   } else {
     moveToward(defender, targetX, targetY, 4);
-    addFatigue(defender, 0.2 * reaction.fatigueMod);
+    addFatigue(defender, 0.08 * reaction.fatigueMod);
   }
 }
 
@@ -810,17 +811,18 @@ function normalPass() {
   const attackers = teamA.filter(p => p.pos !== 'GK');
   const from = attackers[Math.floor(Math.random() * attackers.length)];
   
-  // Ensure pass goes forward or laterally (not backwards)
-  const candidates = attackers.filter(p => {
-    if (p === from) return false;
-    const dx = p.x - from.x;
-    const dy = p.y - from.y;
-    // Forward (x increases) or lateral (within 45 degrees)
-    return dx > -30 && Math.abs(dy) < Math.abs(dx) + 60;
-  });
-  
+  // Pick any teammate (slight preference for forward)
+  const candidates = attackers.filter(p => p !== from);
   if (candidates.length === 0) return;
-  const to = candidates[Math.floor(Math.random() * candidates.length)];
+  
+  // 70% chance to pick a forward/lateral pass, 30% backward
+  let to;
+  const forwardCandidates = candidates.filter(p => p.x >= from.x - 20);
+  if (forwardCandidates.length > 0 && Math.random() < 0.7) {
+    to = forwardCandidates[Math.floor(Math.random() * forwardCandidates.length)];
+  } else {
+    to = candidates[Math.floor(Math.random() * candidates.length)];
+  }
   
   // Update offside line
   updateOffsideLine();
@@ -866,6 +868,15 @@ function normalPass() {
   }
   
   executePass(from, to, passType, touchDir);
+  
+  // Add fatigue to nearby defenders (scaled for realistic buildup)
+  // Target: players hit wall around 60-75 min for targeted, 75-90 for others
+  teamB.filter(p => !p.subbed && p.pos !== 'GK').forEach(p => {
+    const d = dist(p, to);
+    if (d < 80) addFatigue(p, 0.25);
+    else if (d < 120) addFatigue(p, 0.15);
+    else if (d < 160) addFatigue(p, 0.08);
+  });
 }
 
 function targetCBPass() {
@@ -984,11 +995,11 @@ function doubleSwitchPass() {
   // Second switch: right
   setTimeout(() => {
     executePass(lw, rw, 'long', 'lateral');
-    // Force ALL defenders to sprint across
+    // Force defenders to sprint across
     teamB.filter(p => !p.subbed && p.pos !== 'GK').forEach(p => {
-      const sprintDist = 80 + Math.random() * 40;
-      moveToward(p, p.x + (ball.y > 210 ? 50 : -50), p.y + (Math.random()-0.5)*30, 7);
-      addFatigue(p, 0.9);
+      const sprintDist = 60 + Math.random() * 30;
+      moveToward(p, p.x + (ball.y > 210 ? 40 : -40), p.y + (Math.random()-0.5)*25, 6);
+      addFatigue(p, 0.3);
       p.sprints++;
       p.sprintDist += sprintDist;
     });
@@ -1001,8 +1012,8 @@ function doubleSwitchPass() {
     
     executePass(rw, lw, 'long', 'forward');
     teamB.filter(p => !p.subbed && p.pos !== 'GK').forEach(p => {
-      moveToward(p, p.x + (ball.y > 210 ? -40 : 40), p.y + (Math.random()-0.5)*30, 7);
-      addFatigue(p, 1.0);
+      moveToward(p, p.x + (ball.y > 210 ? -30 : 30), p.y + (Math.random()-0.5)*25, 6);
+      addFatigue(p, 0.35);
       p.sprints++;
     });
   }, 120);
@@ -1265,17 +1276,26 @@ function update(dt) {
     p.y = Math.max(PITCH.y + 15, Math.min(PITCH.y + PITCH.h - 15, p.y));
   });
 
-  // Passive fatigue recovery
-  teamB.filter(p => !p.subbed).forEach(p => {
-    p.fatigue = Math.max(0, p.fatigue - 0.002 * speed);
-  });
+  // Passive fatigue recovery (meaningful recovery between plays)
+  // Recovery is proportional to game time, not real time
+  if (Math.random() < 0.1) { // 10% chance per frame
+    teamB.filter(p => !p.subbed).forEach(p => {
+      // Recovery per game-minute: ~0.3% when fresh, ~0.1% when tired
+      const recoveryPerMinute = p.fatigue > 70 ? 0.001 : p.fatigue > 40 ? 0.002 : 0.003;
+      p.fatigue = Math.max(0, p.fatigue - recoveryPerMinute * speed);
+    });
+  }
 
   // Generate passes based on tempo (70-180 passes per 90 min)
-  // Slow: ~70, Normal: ~120, Fast: ~180
-  const tempoInterval = tempo === 'slow' ? 4500 : tempo === 'fast' ? 1500 : 2500;
-  if (Date.now() - lastPassTime > tempoInterval / speed) {
+  // Slow: ~70, Normal: ~120, Fast: ~180 passes per game
+  const passesPerGame = tempo === 'slow' ? 70 : tempo === 'fast' ? 180 : 120;
+  // Use game time for pass interval, not real time
+  const passIntervalGameMs = (90 * 60 * 1000) / passesPerGame;
+  const currentGameMs = gameMinute * 60 * 1000 + gameSecond * 1000;
+  if (currentGameMs - lastPassGameTime > passIntervalGameMs) {
     passFunctions[pattern]();
     sequences++;
+    lastPassGameTime = currentGameMs;
     lastPassTime = Date.now();
     passLines = passLines.filter(l => Date.now() - l.time < 2000);
     dummyLines = dummyLines.filter(l => Date.now() - l.time < 1500);
