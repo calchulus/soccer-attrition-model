@@ -76,7 +76,20 @@
       <button onclick="setPattern('midfieldTrap')" id="pat-midfieldTrap">Midfield Trap</button>
       <button onclick="setPattern('pressBait')" id="pat-pressBait">Press Bait</button>
     </div>
-    <div class="legend">🔴 Targeted &nbsp; 🟢 Normal &nbsp; 🟡 Subbed &nbsp; ⚽ Ball</div>
+    <div class="legend">
+      <div style="margin-bottom:4px"><b>Pass Lines:</b></div>
+      <div>🟡 Yellow dashed = Successful pass</div>
+      <div>🔴 Red dashed = Intercepted pass</div>
+      <div>⚪ White dotted = Dummy/feint</div>
+      <div>🔵 Blue dotted = Offside line</div>
+      <div style="margin-top:4px"><b>Players:</b> 🔴 Targeted &nbsp; 🟢 Normal &nbsp; 🟡 Subbed</div>
+      <div style="margin-top:4px"><b>Tempo:</b></div>
+      <div>
+        <button onclick="setTempo('slow')" id="tempo-slow" style="font-size:0.7em;padding:2px 6px">Slow</button>
+        <button onclick="setTempo('normal')" id="tempo-normal" class="active" style="font-size:0.7em;padding:2px 6px">Normal</button>
+        <button onclick="setTempo('fast')" id="tempo-fast" style="font-size:0.7em;padding:2px 6px">Fast</button>
+      </div>
+    </div>
   </div>
   <div class="panel" id="stats-panel">
     <h2>Match Stats</h2>
@@ -159,10 +172,14 @@ const bench = [
 ];
 
 let ball = { x: 250, y: 210 };
+let ballTarget = { x: 250, y: 210 };
+let ballMoving = false;
+let ballSpeed = 0;
 let gameMinute = 0;
 let gameSecond = 0;
 let speed = 1;
 let pattern = 'normal';
+let tempo = 'normal'; // slow, normal, fast
 let sequences = 0;
 let totalPasses = 0;
 let successfulPasses = 0;
@@ -284,9 +301,14 @@ function moveToward(player, tx, ty, spd) {
 }
 
 function addPassLine(from, to, type = 'ground', success = true) {
-  const color = success ? 'rgba(255, 255, 100,' : 'rgba(255, 100, 100,';
-  const dash = type === 'aerial' || type === 'lobbed' || type === 'long' ? [8, 4] : [5, 5];
-  passLines.push({ x1: from.x, y1: from.y, x2: to.x, y2: to.y, time: Date.now(), color, dash, type });
+  const isAerial = type === 'lobbed' || type === 'long';
+  const color = success ? 
+    (isAerial ? 'rgba(255, 200, 100,' : 'rgba(255, 255, 100,') : 
+    'rgba(255, 100, 100,';
+  // Aerial: wide dash, thicker. Ground: narrow dash, thinner
+  const dash = isAerial ? [10, 6] : [4, 4];
+  const lineWidth = isAerial ? 3 : 2;
+  passLines.push({ x1: from.x, y1: from.y, x2: to.x, y2: to.y, time: Date.now(), color, dash, lineWidth, isAerial, type });
 }
 
 function addDummyLine(from, to) {
@@ -395,10 +417,13 @@ function executePass(from, to, passType, touchDir) {
   
   totalPasses++;
   
+  // Animate ball movement
+  ballTarget = { x: to.x, y: to.y };
+  ballMoving = true;
+  ballSpeed = type.speed * 8;
+  
   if (success) {
     successfulPasses++;
-    ball.x = to.x;
-    ball.y = to.y;
     addPassLine(from, to, passType, true);
     
     // First touch
@@ -770,8 +795,18 @@ function wasteAttackerEnergy() {
 function normalPass() {
   const attackers = teamA.filter(p => p.pos !== 'GK');
   const from = attackers[Math.floor(Math.random() * attackers.length)];
-  const to = attackers[Math.floor(Math.random() * attackers.length)];
-  if (from === to) return;
+  
+  // Ensure pass goes forward or laterally (not backwards)
+  const candidates = attackers.filter(p => {
+    if (p === from) return false;
+    const dx = p.x - from.x;
+    const dy = p.y - from.y;
+    // Forward (x increases) or lateral (within 45 degrees)
+    return dx > -30 && Math.abs(dy) < Math.abs(dx) + 60;
+  });
+  
+  if (candidates.length === 0) return;
+  const to = candidates[Math.floor(Math.random() * candidates.length)];
   
   // Update offside line
   updateOffsideLine();
@@ -1170,21 +1205,59 @@ function update(dt) {
   if (gameSecond >= 60) { gameSecond -= 60; gameMinute++; }
   if (gameMinute >= 90) { gameMinute = 90; speed = 0; showSummary(); }
 
+  // Animate ball movement
+  if (ballMoving) {
+    const dx = ballTarget.x - ball.x;
+    const dy = ballTarget.y - ball.y;
+    const d = Math.sqrt(dx*dx + dy*dy);
+    if (d < 3) {
+      ball.x = ballTarget.x;
+      ball.y = ballTarget.y;
+      ballMoving = false;
+    } else {
+      const moveSpeed = ballSpeed * dt * 60;
+      ball.x += (dx / d) * Math.min(moveSpeed, d);
+      ball.y += (dy / d) * Math.min(moveSpeed, d);
+    }
+  }
+
+  // Player shading toward ball (defensive positioning)
+  const allPlayers = [...teamA, ...teamB];
+  allPlayers.forEach(p => {
+    if (p.subbed || p.pos === 'GK') return;
+    
+    // Shade toward ball side
+    const ballSide = ball.y > PITCH.y + PITCH.h / 2 ? 1 : -1;
+    const shadeY = p.y + ballSide * 2;
+    p.y += (shadeY - p.y) * 0.02;
+    
+    // Slight constant movement (jockeying)
+    p.x += (Math.random() - 0.5) * 0.5;
+    p.y += (Math.random() - 0.5) * 0.5;
+    
+    // Keep in bounds
+    p.x = Math.max(PITCH.x + 15, Math.min(PITCH.x + PITCH.w - 15, p.x));
+    p.y = Math.max(PITCH.y + 15, Math.min(PITCH.y + PITCH.h - 15, p.y));
+  });
+
   // Passive fatigue recovery
   teamB.filter(p => !p.subbed).forEach(p => {
     p.fatigue = Math.max(0, p.fatigue - 0.002 * speed);
   });
 
-  // Generate passes
-  if (Date.now() - lastPassTime > 600 / speed) {
+  // Generate passes based on tempo (70-180 passes per 90 min)
+  // Slow: ~70, Normal: ~120, Fast: ~180
+  const tempoInterval = tempo === 'slow' ? 4500 : tempo === 'fast' ? 1500 : 2500;
+  if (Date.now() - lastPassTime > tempoInterval / speed) {
     passFunctions[pattern]();
     sequences++;
     lastPassTime = Date.now();
-    passLines = passLines.filter(l => Date.now() - l.time < 800);
+    passLines = passLines.filter(l => Date.now() - l.time < 2000);
+    dummyLines = dummyLines.filter(l => Date.now() - l.time < 1500);
   }
 
   // Team A natural fatigue
-  teamA.forEach(p => { addFatigue(p, 0.01); });
+  teamA.forEach(p => { addFatigue(p, 0.005); });
 }
 
 function substitutePlayer(playerId) {
@@ -1234,11 +1307,11 @@ function render() {
 
   // Pass lines
   passLines.forEach(line => {
-    const age = (Date.now() - line.time) / 800;
+    const age = (Date.now() - line.time) / 2000;
     const alpha = Math.max(0, 1 - age);
     ctx.strokeStyle = `${line.color || 'rgba(255, 255, 100,'} ${alpha})`;
-    ctx.lineWidth = 2;
-    ctx.setLineDash(line.dash || [5, 5]);
+    ctx.lineWidth = line.lineWidth || 2;
+    ctx.setLineDash(line.dash || [4, 4]);
     ctx.beginPath();
     ctx.moveTo(line.x1, line.y1);
     ctx.lineTo(line.x2, line.y2);
@@ -1472,6 +1545,12 @@ function setSpeed(s) {
   if (s === 10) document.getElementById('btn-10x').classList.add('active');
 }
 
+function setTempo(t) {
+  tempo = t;
+  document.querySelectorAll('[id^="tempo-"]').forEach(b => b.classList.remove('active'));
+  document.getElementById('tempo-' + t)?.classList.add('active');
+}
+
 function resetSim() {
   gameMinute = 0; gameSecond = 0; sequences = 0; totalPasses = 0;
   successfulPasses = 0; interceptedPasses = 0; dummiesPlayed = 0;
@@ -1480,6 +1559,7 @@ function resetSim() {
   offsideLine = 0; offsideTrapActive = false; restDefenseShape = 'balanced';
   passLines = []; dummyLines = []; wallWarnings = {}; events = [];
   subsRemaining = 5; subLog = [];
+  ballMoving = false; ballTarget = { x: 250, y: 210 };
   bench.forEach(b => b.used = false);
   document.getElementById('summary-box').style.display = 'none';
   // Reset team B to original state
@@ -1489,6 +1569,9 @@ function resetSim() {
     p.id = origIds[i-1];
     p.fatigue = 0; p.sprints = 0; p.sprintDist = 0; p.totalDist = 0;
     p.targeted = false; p.subbed = false; p.subbed_in = null;
+    // Reset positions
+    const positions = [[460,60],[460,160],[460,260],[460,360],[370,210],[370,130],[370,290],[310,60],[290,210],[310,360]];
+    if (i > 0 && positions[i-1]) { p.x = positions[i-1][0]; p.y = positions[i-1][1]; }
   });
   teamA.forEach(p => { p.fatigue = 0; p.sprints = 0; p.sprintDist = 0; p.totalDist = 0; });
   ball = { x: 250, y: 210 };
