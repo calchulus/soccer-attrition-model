@@ -17,6 +17,7 @@
   .player-card.targeted { border-left-color: #ff4444; }
   .player-card.normal { border-left-color: #44cc44; }
   .player-card.subbed { border-left-color: #ffaa00; opacity: 0.6; }
+  .player-card.injured { border-left-color: #ff0000; background: rgba(255,0,0,0.1); }
   .player-name { font-weight: bold; font-size: 0.85em; }
   .player-pos { font-size: 0.7em; color: #888; }
   .fatigue-bar { height: 8px; background: #333; border-radius: 4px; margin: 4px 0; overflow: hidden; }
@@ -47,7 +48,7 @@
   .event-item.wall { color: #ff4444; }
   .event-item.sub { color: #ffaa00; }
   .event-item.cramp { color: #ff88ff; }
-  .event-item.injury { color: #ff0000; font-weight: bold; }
+  .event-item.injury { color: #ff0000; font-weight: bold; background: rgba(255,0,0,0.1); }
 </style>
 </head>
 <body>
@@ -296,20 +297,31 @@ function addFatigue(player, amount) {
     }
   }
   
-  // Cramp risk: increases with fatigue and dehydration
-  if (player.fatigue > 70 && Math.random() < 0.002 * (player.fatigue / 100)) {
-    if (!player.cramps) player.cramps = 0;
-    player.cramps++;
-    player.crampAt = gameMinute;
-    addEvent(`🦵 ${player.id} CRAMPED at ${gameMinute}'!`, 'cramp');
-    // Cramp causes temporary slowdown
-    player.fatigue = Math.min(100, player.fatigue + 5);
+  // Cramp risk: increases with fatigue and wall hits
+  if (player.fatigue > 70) {
+    const wallHits = player.wallHits ? player.wallHits.length : 0;
+    const crampChance = 0.002 * (player.fatigue / 100) * (1 + wallHits * 0.3);
+    if (Math.random() < crampChance) {
+      if (!player.cramps) player.cramps = 0;
+      player.cramps++;
+      player.crampAt = gameMinute;
+      addEvent(`🦵 ${player.id} CRAMPED (${player.cramps}x) at ${gameMinute}'!`, 'cramp');
+      // Cramp causes temporary slowdown
+      player.fatigue = Math.min(100, player.fatigue + 5);
+    }
   }
   
-  // Injury risk: very high fatigue + cramp history
-  if (player.fatigue > 90 && player.cramps > 0 && Math.random() < 0.001) {
-    addEvent(`🚑 ${player.id} INJURY RISK at ${gameMinute}' - consider substitution!`, 'injury');
-    player.fatigue = 100;
+  // Injury risk: scales with wall hits, cramps, and fatigue
+  if (player.fatigue > 85) {
+    const wallHits = player.wallHits ? player.wallHits.length : 0;
+    const cramps = player.cramps || 0;
+    // Base risk 0.1%, +0.15% per wall hit, +0.5% per cramp
+    const injuryChance = 0.001 + (wallHits * 0.0015) + (cramps * 0.005);
+    if (Math.random() < injuryChance) {
+      addEvent(`🚑 ${player.id} INJURY at ${gameMinute}' - MUST be subbed!`, 'injury');
+      player.fatigue = 100;
+      player.injured = true;
+    }
   }
 }
 
@@ -1546,15 +1558,16 @@ function renderPlayerCards() {
   const container = document.getElementById('player-cards');
   let html = '';
   teamB.filter(p => p.pos !== 'GK').forEach(p => {
-    const cardClass = p.subbed ? 'subbed' : p.targeted ? 'targeted' : 'normal';
+    const cardClass = p.injured ? 'injured' : p.subbed ? 'subbed' : p.targeted ? 'targeted' : 'normal';
     const fColor = p.fatigue > 70 ? '#ff4444' : p.fatigue > 40 ? '#ffaa00' : '#44cc44';
     const subInfo = p.subbed_in ? ` (subbed ${p.subbed_in}')` : '';
     const wallCount = p.wallHits ? p.wallHits.length : 0;
     const wallInfo = wallCount > 0 ? `<span class="wall-indicator">WALL x${wallCount}</span>` : '';
     const crampInfo = p.cramps > 0 ? `<span style="color:#ff88ff">🦵${p.cramps}x</span>` : '';
+    const injuryInfo = p.injured ? `<span style="color:#ff0000;font-weight:bold">🚑 INJURED</span>` : '';
     html += `
       <div class="player-card ${cardClass}">
-        <div class="player-name">${p.id} ${p.targeted ? '🎯' : ''} ${p.subbed ? '🔄' : ''} ${crampInfo}</div>
+        <div class="player-name">${p.id} ${p.targeted ? '🎯' : ''} ${p.subbed ? '🔄' : ''} ${crampInfo} ${injuryInfo}</div>
         <div class="player-pos">${p.pos}${subInfo} ${wallInfo}</div>
         <div class="fatigue-bar"><div class="fatigue-fill" style="width:${p.fatigue}%;background:${fColor}"></div></div>
         <div class="fatigue-label"><span>${Math.round(p.fatigue)}% fatigue</span><span>${p.sprints} sprints</span></div>
