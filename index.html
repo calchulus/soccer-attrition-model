@@ -598,6 +598,7 @@ function calculateRunEfficiency(runType, gameSituation) {
 function applyDefensiveTactic(tacticName) {
   const tactic = DEF_TACTICS[tacticName] || DEF_TACTICS.dropDeep;
   const defenders = teamB.filter(p => !p.subbed && p.pos !== 'GK');
+  const attackers = teamA.filter(p => p.pos !== 'GK');
   
   switch(tacticName) {
     case 'dropDeep':
@@ -639,7 +640,6 @@ function applyDefensiveTactic(tacticName) {
       
     case 'doubleUp':
       // Two defenders on dangerous runner
-      const attackers = teamA.filter(p => p.pos !== 'GK');
       const mostDangerous = attackers.reduce((danger, a) => {
         return a.x > danger.x ? a : danger;
       }, attackers[0]);
