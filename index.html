@@ -1,0 +1,1519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Soccer Attrition Model - Fatigue Simulation</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a2e; color: #eee; font-family: 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 10px; }
+  h1 { font-size: 1.4em; margin: 8px 0; color: #00d4ff; }
+  .container { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+  .field-container { position: relative; }
+  canvas { border: 2px solid #444; border-radius: 4px; }
+  .panel { background: #16213e; border-radius: 8px; padding: 12px; width: 300px; max-height: 700px; overflow-y: auto; }
+  .panel h2 { font-size: 1em; margin-bottom: 8px; color: #00d4ff; border-bottom: 1px solid #333; padding-bottom: 4px; }
+  .player-card { background: #1a1a2e; border-radius: 6px; padding: 8px; margin-bottom: 6px; border-left: 3px solid #444; }
+  .player-card.targeted { border-left-color: #ff4444; }
+  .player-card.normal { border-left-color: #44cc44; }
+  .player-card.subbed { border-left-color: #ffaa00; opacity: 0.6; }
+  .player-name { font-weight: bold; font-size: 0.85em; }
+  .player-pos { font-size: 0.7em; color: #888; }
+  .fatigue-bar { height: 8px; background: #333; border-radius: 4px; margin: 4px 0; overflow: hidden; }
+  .fatigue-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+  .fatigue-label { font-size: 0.7em; color: #aaa; display: flex; justify-content: space-between; }
+  .controls { margin-top: 10px; }
+  .controls button { background: #0f3460; color: #eee; border: 1px solid #00d4ff; border-radius: 4px; padding: 6px 10px; margin: 3px; cursor: pointer; font-size: 0.75em; }
+  .controls button:hover { background: #00d4ff; color: #000; }
+  .controls button.active { background: #00d4ff; color: #000; }
+  .stats-row { display: flex; justify-content: space-between; font-size: 0.75em; padding: 2px 0; }
+  .stat-label { color: #888; }
+  .stat-value { color: #fff; font-weight: bold; }
+  .wall-indicator { color: #ff4444; font-weight: bold; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .game-clock { font-size: 1.8em; text-align: center; color: #00d4ff; margin: 6px 0; font-variant-numeric: tabular-nums; }
+  .speed-controls { display: flex; gap: 4px; justify-content: center; margin: 6px 0; }
+  .legend { font-size: 0.7em; color: #888; margin-top: 4px; }
+  .summary { background: #0f3460; border-radius: 6px; padding: 8px; margin-top: 8px; }
+  .summary h3 { font-size: 0.85em; color: #ff4444; margin-bottom: 4px; }
+  .sub-panel { background: #1a1a2e; border-radius: 6px; padding: 8px; margin-top: 8px; }
+  .sub-panel h3 { font-size: 0.85em; color: #ffaa00; margin-bottom: 4px; }
+  .sub-btn { background: #ffaa00; color: #000; border: none; border-radius: 4px; padding: 4px 8px; margin: 2px; cursor: pointer; font-size: 0.7em; }
+  .sub-btn:hover { background: #ffcc00; }
+  .sub-btn:disabled { background: #555; cursor: not-allowed; }
+  .event-log { background: #1a1a2e; border-radius: 6px; padding: 8px; margin-top: 8px; max-height: 120px; overflow-y: auto; }
+  .event-log h3 { font-size: 0.85em; color: #44cc44; margin-bottom: 4px; }
+  .event-item { font-size: 0.65em; color: #aaa; padding: 2px 0; border-bottom: 1px solid #222; }
+  .event-item.wall { color: #ff4444; }
+  .event-item.sub { color: #ffaa00; }
+</style>
+</head>
+<body>
+<h1>Soccer Attrition Model — Fatigue Simulation</h1>
+<div class="container">
+  <div class="field-container">
+    <canvas id="field" width="600" height="420"></canvas>
+    <div class="game-clock" id="clock">00:00</div>
+    <div class="speed-controls">
+      <button onclick="setSpeed(0)" id="btn-pause">⏸ Pause</button>
+      <button onclick="setSpeed(1)" id="btn-1x" class="active">1x</button>
+      <button onclick="setSpeed(3)" id="btn-3x">3x</button>
+      <button onclick="setSpeed(10)" id="btn-10x">10x</button>
+      <button onclick="resetSim()">↺ Reset</button>
+    </div>
+    <div class="controls">
+      <div style="font-size:0.8em;color:#aaa;margin-bottom:4px;">Attack Pattern:</div>
+      <button onclick="setPattern('normal')" id="pat-normal" class="active">Normal Play</button>
+      <button onclick="setPattern('targetCB')" id="pat-targetCB">Target CB</button>
+      <button onclick="setPattern('targetFB')" id="pat-targetFB">Target FB</button>
+      <button onclick="setPattern('targetDM')" id="pat-targetDM">Target DM</button>
+      <button onclick="setPattern('switchPlay')" id="pat-switchPlay">Switch of Play</button>
+      <button onclick="setPattern('doubleSwitch')" id="pat-doubleSwitch">Double Switch</button>
+      <button onclick="setPattern('overload')" id="pat-overload">Wing Overload</button>
+      <button onclick="setPattern('overloadSwitch')" id="pat-overloadSwitch">Overload + Switch</button>
+      <button onclick="setPattern('throughBall')" id="pat-throughBall">Through Balls</button>
+      <button onclick="setPattern('verticalStretch')" id="pat-verticalStretch">Vertical Stretch</button>
+      <button onclick="setPattern('midfieldTrap')" id="pat-midfieldTrap">Midfield Trap</button>
+      <button onclick="setPattern('pressBait')" id="pat-pressBait">Press Bait</button>
+    </div>
+    <div class="legend">🔴 Targeted &nbsp; 🟢 Normal &nbsp; 🟡 Subbed &nbsp; ⚽ Ball</div>
+  </div>
+  <div class="panel" id="stats-panel">
+    <h2>Match Stats</h2>
+    <div class="stats-row"><span class="stat-label">Pattern:</span><span class="stat-value" id="stat-pattern">Normal Play</span></div>
+    <div class="stats-row"><span class="stat-label">Sequences:</span><span class="stat-value" id="stat-seq">0</span></div>
+    <div class="stats-row"><span class="stat-label">Total Passes:</span><span class="stat-value" id="stat-passes">0</span></div>
+    <div class="stats-row"><span class="stat-label">Pass Accuracy:</span><span class="stat-value" id="stat-accuracy">0%</span></div>
+    <div class="stats-row"><span class="stat-label">Dummies Played:</span><span class="stat-value" id="stat-dummies">0</span></div>
+    <div class="stats-row"><span class="stat-label">Offside Traps:</span><span class="stat-value" id="stat-offsideTraps">0</span></div>
+    <div class="stats-row"><span class="stat-label">Offsides Caught:</span><span class="stat-value" id="stat-offsides">0</span></div>
+    <div class="stats-row"><span class="stat-label">Counter Exposures:</span><span class="stat-value" id="stat-counterExposures">0</span></div>
+    <div class="stats-row"><span class="stat-label">Runs Nullified:</span><span class="stat-value" id="stat-runsNullified">0</span></div>
+    <div class="stats-row"><span class="stat-label">Passes Prevented:</span><span class="stat-value" id="stat-passesPrevented">0</span></div>
+    <div class="stats-row"><span class="stat-label">Team A Avg Fatigue:</span><span class="stat-value" id="stat-avgA">0%</span></div>
+    <div class="stats-row"><span class="stat-label">Team B Avg Fatigue:</span><span class="stat-value" id="stat-avgB">0%</span></div>
+
+    <div class="sub-panel">
+      <h3>Substitutions (Team B): <span id="sub-count">5</span>/5 remaining</h3>
+      <div id="sub-buttons"></div>
+    </div>
+
+    <h2 style="margin-top:10px">Team B Players (Defending)</h2>
+    <div id="player-cards"></div>
+
+    <div class="event-log">
+      <h3>Events</h3>
+      <div id="event-list"></div>
+    </div>
+
+    <div class="summary" id="summary-box" style="display:none">
+      <h3 id="summary-title"></h3>
+      <div id="summary-text" style="font-size:0.75em;color:#ccc;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('field');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const PITCH = { x: 30, y: 20, w: 540, h: 380 };
+
+// Team A (attacking left to right) - 4-3-3
+const teamA = [
+  { id:'GK_A', pos:'GK', x:60, y:210, color:'#2196F3', fatigue:0, sprints:0, sprintDist:0, totalDist:0 },
+  { id:'LB_A', pos:'LB', x:140, y:60, color:'#2196F3', fatigue:0, sprints:0, sprintDist:0, totalDist:0 },
+  { id:'CB_A1',pos:'CB', x:140, y:160, color:'#2196F3', fatigue:0, sprints:0, sprintDist:0, totalDist:0 },
+  { id:'CB_A2',pos:'CB', x:140, y:260, color:'#2196F3', fatigue:0, sprints:0, sprintDist:0, totalDist:0 },
+  { id:'RB_A', pos:'RB', x:140, y:360, color:'#2196F3', fatigue:0, sprints:0, sprintDist:0, totalDist:0 },
+  { id:'CM_A1',pos:'CM', x:250, y:120, color:'#2196F3', fatigue:0, sprints:0, sprintDist:0, totalDist:0 },
+  { id:'CM_A2',pos:'CM', x:250, y:210, color:'#2196F3', fatigue:0, sprints:0, sprintDist:0, totalDist:0 },
+  { id:'CM_A3',pos:'CM', x:250, y:300, color:'#2196F3', fatigue:0, sprints:0, sprintDist:0, totalDist:0 },
+  { id:'LW_A', pos:'LW', x:380, y:60, color:'#2196F3', fatigue:0, sprints:0, sprintDist:0, totalDist:0 },
+  { id:'ST_A', pos:'ST', x:400, y:210, color:'#2196F3', fatigue:0, sprints:0, sprintDist:0, totalDist:0 },
+  { id:'RW_A', pos:'RW', x:380, y:360, color:'#2196F3', fatigue:0, sprints:0, sprintDist:0, totalDist:0 },
+];
+
+// Team B (defending) - 4-3-3
+const teamB = [
+  { id:'GK_B', pos:'GK', x:540, y:210, color:'#f44336', fatigue:0, sprints:0, sprintDist:0, totalDist:0 },
+  { id:'LB_B', pos:'LB', x:460, y:60, color:'#f44336', fatigue:0, sprints:0, sprintDist:0, totalDist:0, targeted:false, subbed:false },
+  { id:'CB_B1',pos:'CB', x:460, y:160, color:'#f44336', fatigue:0, sprints:0, sprintDist:0, totalDist:0, targeted:false, subbed:false },
+  { id:'CB_B2',pos:'CB', x:460, y:260, color:'#f44336', fatigue:0, sprints:0, sprintDist:0, totalDist:0, targeted:false, subbed:false },
+  { id:'RB_B', pos:'RB', x:460, y:360, color:'#f44336', fatigue:0, sprints:0, sprintDist:0, totalDist:0, targeted:false, subbed:false },
+  { id:'DM_B', pos:'DM', x:370, y:210, color:'#f44336', fatigue:0, sprints:0, sprintDist:0, totalDist:0, targeted:false, subbed:false },
+  { id:'CM_B1',pos:'CM', x:370, y:130, color:'#f44336', fatigue:0, sprints:0, sprintDist:0, totalDist:0, targeted:false, subbed:false },
+  { id:'CM_B2',pos:'CM', x:370, y:290, color:'#f44336', fatigue:0, sprints:0, sprintDist:0, totalDist:0, targeted:false, subbed:false },
+  { id:'LW_B', pos:'LW', x:310, y:60, color:'#f44336', fatigue:0, sprints:0, sprintDist:0, totalDist:0, subbed:false },
+  { id:'ST_B', pos:'ST', x:290, y:210, color:'#f44336', fatigue:0, sprints:0, sprintDist:0, totalDist:0, subbed:false },
+  { id:'RW_B', pos:'RW', x:310, y:360, color:'#f44336', fatigue:0, sprints:0, sprintDist:0, totalDist:0, subbed:false },
+];
+
+// Bench players (for substitutions)
+const bench = [
+  { id:'SUB1', pos:'DEF', color:'#ff8800', fatigue:0 },
+  { id:'SUB2', pos:'DEF', color:'#ff8800', fatigue:0 },
+  { id:'SUB3', pos:'MID', color:'#ff8800', fatigue:0 },
+  { id:'SUB4', pos:'MID', color:'#ff8800', fatigue:0 },
+  { id:'SUB5', pos:'FWD', color:'#ff8800', fatigue:0 },
+];
+
+let ball = { x: 250, y: 210 };
+let gameMinute = 0;
+let gameSecond = 0;
+let speed = 1;
+let pattern = 'normal';
+let sequences = 0;
+let totalPasses = 0;
+let successfulPasses = 0;
+let interceptedPasses = 0;
+let dummiesPlayed = 0;
+let passLines = [];
+let dummyLines = [];
+let lastPassTime = 0;
+let wallWarnings = {};
+let events = [];
+let subsRemaining = 5;
+let subLog = [];
+
+// Pass types and their properties
+const PASS_TYPES = {
+  ground: { speed: 1.0, aerial: false, successMod: 0.0, fatigueMod: 1.0, label: 'Ground' },
+  driven: { speed: 1.4, aerial: false, successMod: -0.1, fatigueMod: 1.2, label: 'Driven' },
+  lobbed: { speed: 0.7, aerial: true, successMod: -0.15, fatigueMod: 0.9, label: 'Lobbed' },
+  through: { speed: 1.2, aerial: false, successMod: -0.05, fatigueMod: 1.3, label: 'Through' },
+  long: { speed: 0.8, aerial: true, successMod: -0.2, fatigueMod: 0.8, label: 'Long Ball' },
+};
+
+// First touch directions
+const TOUCH_DIRS = {
+  forward: { fatigueMod: 1.4, spaceGain: 15, label: 'Forward' },
+  backward: { fatigueMod: 0.6, spaceGain: -10, label: 'Backward' },
+  lateral: { fatigueMod: 1.0, spaceGain: 5, label: 'Lateral' },
+  dummy: { fatigueMod: 0.3, spaceGain: 0, label: 'Dummy' },
+};
+
+// Defender reaction states
+const DEF_REACTIONS = {
+  pressing: { fatigueMod: 1.5, sprintChance: 0.8 },
+  tracking: { fatigueMod: 1.2, sprintChance: 0.6 },
+  holding: { fatigueMod: 0.8, sprintChance: 0.3 },
+  stepping: { fatigueMod: 1.3, sprintChance: 0.7 },
+  offsideTrap: { fatigueMod: 0.4, sprintChance: 0.2 },
+  restDefense: { fatigueMod: 0.3, sprintChance: 0.1 },
+};
+
+// Offside trap state
+let offsideLine = 0; // X position of defensive line
+let offsideTrapActive = false;
+let offsideTrapsTriggered = 0;
+let offsidesCaught = 0;
+
+// Rest defense state
+let restDefenseShape = 'balanced'; // balanced, compact, wide, deep
+let counterAttackExposures = 0;
+let runsNullified = 0;
+let passesPrevented = 0;
+
+// Run types for attackers
+const RUN_TYPES = {
+  diagonal: { fatigueMod: 1.2, spaceGain: 20, offsideRisk: 0.7, label: 'Diagonal' },
+  channel: { fatigueMod: 1.0, spaceGain: 15, offsideRisk: 0.5, label: 'Channel' },
+  dropDeep: { fatigueMod: 0.6, spaceGain: -15, offsideRisk: 0.1, label: 'Drop Deep' },
+  stretchWide: { fatigueMod: 0.8, spaceGain: 10, offsideRisk: 0.3, label: 'Stretch Wide' },
+  falseNine: { fatigueMod: 0.7, spaceGain: -10, offsideRisk: 0.2, label: 'False 9' },
+};
+
+// Defensive tactics to nullify runs
+const DEF_TACTICS = {
+  dropDeep: { fatigueMod: 0.4, runNullify: 0.8, passBlock: 0.3, label: 'Drop Deep' },
+  pressHigh: { fatigueMod: 1.2, runNullify: 0.3, passBlock: 0.7, label: 'Press High' },
+  forceWide: { fatigueMod: 0.6, runNullify: 0.6, passBlock: 0.4, label: 'Force Wide' },
+  doubleUp: { fatigueMod: 0.8, runNullify: 0.9, passBlock: 0.5, label: 'Double Up' },
+  blockLanes: { fatigueMod: 0.5, runNullify: 0.4, passBlock: 0.8, label: 'Block Lanes' },
+  baitRun: { fatigueMod: 0.3, runNullify: 0.7, passBlock: 0.2, label: 'Bait Run' },
+};
+
+// Pattern targets
+const patternTargets = {
+  normal: [],
+  targetCB: ['CB_B1'],
+  targetFB: ['LB_B'],
+  targetDM: ['DM_B'],
+  switchPlay: ['LB_B', 'RB_B', 'CB_B1', 'CB_B2'],
+  doubleSwitch: ['LB_B', 'RB_B', 'DM_B'],
+  overload: ['LB_B', 'CB_B1'],
+  overloadSwitch: ['LB_B', 'RB_B', 'CB_B1', 'DM_B'],
+  throughBall: ['CB_B1', 'CB_B2'],
+  verticalStretch: ['CB_B1', 'CB_B2', 'DM_B'],
+  midfieldTrap: ['DM_B', 'CM_B1', 'CM_B2'],
+  pressBait: ['ST_B', 'CM_B1', 'CM_B2'],
+};
+
+function getTargetedIds() { return patternTargets[pattern] || []; }
+
+function markTargets() {
+  const targets = getTargetedIds();
+  teamB.forEach(p => { p.targeted = targets.includes(p.id) && !p.subbed; });
+}
+
+function addFatigue(player, amount) {
+  if (player.subbed) return;
+  const bonus = player.targeted ? 1.8 : 1.0;
+  player.fatigue = Math.min(100, player.fatigue + amount * bonus);
+  if (player.fatigue >= 85 && !wallWarnings[player.id]) {
+    wallWarnings[player.id] = gameMinute;
+    addEvent(`⚠ ${player.id} hit the WALL at ${gameMinute}'`, 'wall');
+  }
+}
+
+function dist(a, b) { return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2); }
+
+function moveToward(player, tx, ty, spd) {
+  if (player.subbed) return;
+  const d = dist(player, {x:tx, y:ty});
+  if (d < 2) return;
+  const dx = (tx - player.x) / d;
+  const dy = (ty - player.y) / d;
+  const moveSpeed = spd * (1 - player.fatigue * 0.003);
+  player.x += dx * moveSpeed;
+  player.y += dy * moveSpeed;
+  player.x = Math.max(PITCH.x + 10, Math.min(PITCH.x + PITCH.w - 10, player.x));
+  player.y = Math.max(PITCH.y + 10, Math.min(PITCH.y + PITCH.h - 10, player.y));
+  player.totalDist += moveSpeed;
+}
+
+function addPassLine(from, to, type = 'ground', success = true) {
+  const color = success ? 'rgba(255, 255, 100,' : 'rgba(255, 100, 100,';
+  const dash = type === 'aerial' || type === 'lobbed' || type === 'long' ? [8, 4] : [5, 5];
+  passLines.push({ x1: from.x, y1: from.y, x2: to.x, y2: to.y, time: Date.now(), color, dash, type });
+}
+
+function addDummyLine(from, to) {
+  dummyLines.push({ x1: from.x, y1: from.y, x2: to.x, y2: to.y, time: Date.now() });
+}
+
+function addEvent(text, type) {
+  events.unshift({ text, type, time: `${String(gameMinute).padStart(2,'0')}:${String(Math.floor(gameSecond)).padStart(2,'0')}` });
+  if (events.length > 20) events.pop();
+}
+
+// ==================== PASS MECHANICS ====================
+
+function calcPassSuccess(from, to, passType, defenders) {
+  const type = PASS_TYPES[passType] || PASS_TYPES.ground;
+  let baseChance = 0.85;
+  
+  // Distance penalty
+  const distance = dist(from, to);
+  baseChance -= distance * 0.001;
+  
+  // Defender pressure
+  const nearbyDefenders = defenders.filter(d => !d.subbed && dist(d, to) < 50);
+  baseChance -= nearbyDefenders.length * 0.15;
+  
+  // Fatigue of passer
+  baseChance -= from.fatigue * 0.002;
+  
+  // Pass type modifier
+  baseChance += type.successMod;
+  
+  // Aerial passes harder under pressure
+  if (type.aerial && nearbyDefenders.length > 0) {
+    baseChance -= 0.1;
+  }
+  
+  return Math.max(0.3, Math.min(0.95, baseChance));
+}
+
+function defenderReaction(defender, ballPos, reactionType) {
+  const reaction = DEF_REACTIONS[reactionType] || DEF_REACTIONS.holding;
+  
+  // Move toward ball or cover space
+  const targetX = ballPos.x + (Math.random() - 0.5) * 40;
+  const targetY = ballPos.y + (Math.random() - 0.5) * 40;
+  
+  if (Math.random() < reaction.sprintChance) {
+    moveToward(defender, targetX, targetY, 7);
+    addFatigue(defender, 0.4 * reaction.fatigueMod);
+    defender.sprints++;
+  } else {
+    moveToward(defender, targetX, targetY, 4);
+    addFatigue(defender, 0.2 * reaction.fatigueMod);
+  }
+}
+
+function firstTouch(receiver, touchDir, defenders) {
+  const touch = TOUCH_DIRS[touchDir] || TOUCH_DIRS.lateral;
+  
+  // Calculate touch destination
+  let touchX = receiver.x;
+  let touchY = receiver.y;
+  
+  // Find nearest defender
+  const nearestDef = defenders.reduce((nearest, d) => {
+    const dDist = dist(d, receiver);
+    return dDist < dist(nearest, d) ? d : nearest;
+  }, defenders[0] || { x: receiver.x + 100, y: receiver.y });
+  
+  const defAngle = Math.atan2(nearestDef.y - receiver.y, nearestDef.x - receiver.x);
+  
+  switch(touchDir) {
+    case 'forward':
+      touchX = receiver.x + Math.cos(defAngle + Math.PI) * touch.spaceGain;
+      touchY = receiver.y + Math.sin(defAngle + Math.PI) * touch.spaceGain;
+      break;
+    case 'backward':
+      touchX = receiver.x + Math.cos(defAngle) * Math.abs(touch.spaceGain);
+      touchY = receiver.y + Math.sin(defAngle) * Math.abs(touch.spaceGain);
+      break;
+    case 'lateral':
+      touchX = receiver.x + Math.cos(defAngle + Math.PI/2) * touch.spaceGain;
+      touchY = receiver.y + Math.sin(defAngle + Math.PI/2) * touch.spaceGain;
+      break;
+    case 'dummy':
+      // Let ball run through, no touch
+      break;
+  }
+  
+  // Apply touch
+  if (touchDir !== 'dummy') {
+    receiver.x = Math.max(PITCH.x + 10, Math.min(PITCH.x + PITCH.w - 10, touchX));
+    receiver.y = Math.max(PITCH.y + 10, Math.min(PITCH.y + PITCH.h - 10, touchY));
+  }
+  
+  addFatigue(receiver, touch.fatigueMod * 0.3);
+  receiver.totalDist += touch.spaceGain;
+  
+  return touch;
+}
+
+function executePass(from, to, passType, touchDir) {
+  const defenders = teamB.filter(p => !p.subbed && p.pos !== 'GK');
+  const success = Math.random() < calcPassSuccess(from, to, passType, defenders);
+  const type = PASS_TYPES[passType] || PASS_TYPES.ground;
+  
+  totalPasses++;
+  
+  if (success) {
+    successfulPasses++;
+    ball.x = to.x;
+    ball.y = to.y;
+    addPassLine(from, to, passType, true);
+    
+    // First touch
+    const touch = firstTouch(to, touchDir, defenders);
+    
+    // Defender reactions based on pass type
+    defenders.forEach(d => {
+      const dDist = dist(d, to);
+      if (dDist < 100) {
+        const reaction = type.aerial ? 'stepping' : 'pressing';
+        defenderReaction(d, ball, reaction);
+      } else if (dDist < 150) {
+        defenderReaction(d, ball, 'tracking');
+      }
+    });
+    
+    return true;
+  } else {
+    interceptedPasses++;
+    addPassLine(from, to, passType, false);
+    addEvent(`❌ ${type.label} pass intercepted!`, 'intercept');
+    
+    // Defenders who intercepted get less fatigue (they're standing still)
+    defenders.forEach(d => {
+      if (dist(d, to) < 60) {
+        addFatigue(d, 0.1);
+      }
+    });
+    
+    return false;
+  }
+}
+
+function playDummy(from, to) {
+  dummiesPlayed++;
+  addDummyLine(from, to);
+  
+  // Fake defender reaction
+  const defenders = teamB.filter(p => !p.subbed && p.pos !== 'GK');
+  defenders.forEach(d => {
+    if (dist(d, to) < 80) {
+      // Defender bites on the dummy
+      moveToward(d, to.x, to.y, 6);
+      addFatigue(d, 0.4);
+      d.sprints++;
+    }
+  });
+  
+  addEvent(`🎭 Dummy played - ${defenders.filter(d => dist(d, to) < 80).length} defenders reacted`, 'dummy');
+}
+
+// ==================== OFFSIDE TRAP ====================
+
+function updateOffsideLine() {
+  // Defensive line moves up/down based on ball position
+  const defenders = teamB.filter(p => !p.subbed && (p.pos === 'CB' || p.pos === 'LB' || p.pos === 'RB'));
+  if (defenders.length === 0) return;
+  
+  // Average X position of defensive line
+  const avgX = defenders.reduce((sum, d) => sum + d.x, 0) / defenders.length;
+  
+  // Offside line is the highest defender's X position
+  offsideLine = Math.max(...defenders.map(d => d.x));
+}
+
+function triggerOffsideTrap() {
+  // All defenders step up together
+  const defenders = teamB.filter(p => !p.subbed && (p.pos === 'CB' || p.pos === 'LB' || p.pos === 'RB'));
+  
+  defenders.forEach(d => {
+    // Step up (move forward)
+    moveToward(d, d.x - 30, d.y, 5);
+    addFatigue(d, 0.2); // Low fatigue - just stepping up
+  });
+  
+  offsideTrapsTriggered++;
+  offsideTrapActive = true;
+  
+  addEvent(`🚩 Offside trap triggered at ${gameMinute}'`, 'offside');
+  
+  // Check if any attackers are caught offside
+  const attackers = teamA.filter(p => p.pos !== 'GK');
+  attackers.forEach(a => {
+    if (a.x > offsideLine + 5) {
+      offsidesCaught++;
+      addEvent(`❌ ${a.pos} caught offside!`, 'offside');
+      // Reset attacker position
+      a.x = offsideLine - 20;
+    }
+  });
+  
+  setTimeout(() => { offsideTrapActive = false; }, 500);
+}
+
+function checkOffsideRisk(attacker, passType) {
+  // Calculate offside risk based on pass type and attacker position
+  const type = PASS_TYPES[passType] || PASS_TYPES.ground;
+  let risk = 0.3; // Base risk
+  
+  // Through balls and long balls have higher offside risk
+  if (passType === 'through') risk += 0.3;
+  if (passType === 'long') risk += 0.2;
+  
+  // Attacker position relative to offside line
+  if (attacker.x > offsideLine) risk += 0.4;
+  if (attacker.x > offsideLine + 20) risk += 0.3;
+  
+  // Fatigue reduces reaction time (harder to time runs)
+  risk += attacker.fatigue * 0.002;
+  
+  return Math.min(0.9, risk);
+}
+
+// ==================== REST DEFENSE ====================
+
+function updateRestDefense() {
+  // When Team A has ball, Team B sets up rest defense
+  const defenders = teamB.filter(p => !p.subbed && (p.pos === 'CB' || p.pos === 'LB' || p.pos === 'RB'));
+  const midfielders = teamB.filter(p => !p.subbed && (p.pos === 'DM' || p.pos === 'CM'));
+  
+  // Determine rest defense shape based on ball position
+  if (ball.x < 300) {
+    restDefenseShape = 'deep'; // Ball in our half - sit deep
+  } else if (ball.x > 450) {
+    restDefenseShape = 'compact'; // Ball in their half - stay compact
+  } else {
+    restDefenseShape = 'balanced'; // Midfield - balanced shape
+  }
+  
+  // Apply rest defense positioning
+  defenders.forEach(d => {
+    const targetX = restDefenseShape === 'deep' ? d.x + 20 : 
+                    restDefenseShape === 'compact' ? d.x - 10 : d.x;
+    moveToward(d, targetX, d.y, 3); // Slow movement to save energy
+    addFatigue(d, 0.1); // Very low fatigue
+  });
+}
+
+function counterAttackExposure() {
+  // Calculate exposure to counter-attacks
+  const attackersForward = teamA.filter(p => !p.subbed && p.x > 400).length;
+  const defendersBack = teamB.filter(p => !p.subbed && p.x > 400).length;
+  
+  const exposure = Math.max(0, attackersForward - defendersBack);
+  
+  if (exposure > 1) {
+    counterAttackExposures++;
+    addEvent(`⚠ Counter-attack exposure: ${exposure}v${defendersBack}`, 'warning');
+  }
+  
+  return exposure;
+}
+
+// ==================== ENERGY-EFFICIENT ATTACKING ====================
+
+function energyEfficientRun(attacker, runType) {
+  const run = RUN_TYPES[runType] || RUN_TYPES.channel;
+  
+  // Calculate destination
+  let targetX = attacker.x + run.spaceGain;
+  let targetY = attacker.y + (Math.random() - 0.5) * 40;
+  
+  // Check offside risk
+  const offsideRisk = checkOffsideRisk(attacker, 'through');
+  
+  // If offside risk is high, abort run
+  if (offsideRisk > 0.7 && run.offsideRisk > 0.5) {
+    addEvent(`🎭 ${attacker.pos} aborted run - too risky`, 'warning');
+    return false;
+  }
+  
+  // Execute run
+  moveToward(attacker, targetX, targetY, 5);
+  addFatigue(attacker, run.fatigueMod * 0.5);
+  attacker.totalDist += run.spaceGain;
+  
+  return true;
+}
+
+function calculateRunEfficiency(runType, gameSituation) {
+  const run = RUN_TYPES[runType] || RUN_TYPES.channel;
+  
+  // Efficiency = space gained / energy spent
+  const efficiency = run.spaceGain / (run.fatigueMod * 10);
+  
+  // Adjust for game situation
+  let situationalMod = 1.0;
+  if (gameSituation === 'counter') situationalMod = 1.5;
+  if (gameSituation === 'possession') situationalMod = 0.8;
+  if (gameSituation === 'defending') situationalMod = 0.5;
+  
+  return efficiency * situationalMod;
+}
+
+// ==================== DEFENSIVE NULLIFICATION ====================
+
+function applyDefensiveTactic(tacticName) {
+  const tactic = DEF_TACTICS[tacticName] || DEF_TACTICS.dropDeep;
+  const defenders = teamB.filter(p => !p.subbed && p.pos !== 'GK');
+  
+  switch(tacticName) {
+    case 'dropDeep':
+      // All defenders drop back, give no space behind
+      defenders.forEach(d => {
+        moveToward(d, d.x + 25, d.y, 4);
+        addFatigue(d, tactic.fatigueMod * 0.3);
+      });
+      break;
+      
+    case 'pressHigh':
+      // Press the passer, don't let them play through ball
+      const nearestToBall = defenders.reduce((nearest, d) => {
+        return dist(d, ball) < dist(nearest, ball) ? d : nearest;
+      }, defenders[0]);
+      if (nearestToBall) {
+        moveToward(nearestToBall, ball.x - 15, ball.y, 7);
+        addFatigue(nearestToBall, tactic.fatigueMod);
+        nearestToBall.sprints++;
+      }
+      break;
+      
+    case 'forceWide':
+      // Force attacker wide, away from goal
+      const ballCarrier = teamA.find(p => dist(p, ball) < 15);
+      if (ballCarrier) {
+        defenders.forEach(d => {
+          if (dist(d, ballCarrier) < 80) {
+            // Angle toward ball carrier to force them wide
+            const angle = Math.atan2(ballCarrier.y - d.y, ballCarrier.x - d.x);
+            const forceX = d.x + Math.cos(angle + 0.5) * 20;
+            const forceY = d.y + Math.sin(angle + 0.5) * 20;
+            moveToward(d, forceX, forceY, 5);
+            addFatigue(d, tactic.fatigueMod * 0.5);
+          }
+        });
+      }
+      break;
+      
+    case 'doubleUp':
+      // Two defenders on dangerous runner
+      const attackers = teamA.filter(p => p.pos !== 'GK');
+      const mostDangerous = attackers.reduce((danger, a) => {
+        return a.x > danger.x ? a : danger;
+      }, attackers[0]);
+      if (mostDangerous) {
+        const closest2 = defenders
+          .sort((a, b) => dist(a, mostDangerous) - dist(b, mostDangerous))
+          .slice(0, 2);
+        closest2.forEach(d => {
+          moveToward(d, mostDangerous.x + 10, mostDangerous.y, 6);
+          addFatigue(d, tactic.fatigueMod * 0.6);
+        });
+      }
+      break;
+      
+    case 'blockLanes':
+      // Position in passing lanes
+      defenders.forEach(d => {
+        // Find nearest attacker and position between them and ball
+        const nearestAtt = attackers.reduce((nearest, a) => {
+          return dist(d, a) < dist(d, nearest) ? a : nearest;
+        }, attackers[0]);
+        if (nearestAtt && dist(d, nearestAtt) < 100) {
+          const midX = (ball.x + nearestAtt.x) / 2;
+          const midY = (ball.y + nearestAtt.y) / 2;
+          moveToward(d, midX, midY, 4);
+          addFatigue(d, tactic.fatigueMod * 0.4);
+        }
+      });
+      break;
+      
+    case 'baitRun':
+      // Show space, then close it when they run
+      const lw = teamA.find(p => p.id === 'LW_A');
+      if (lw && lw.x > 350) {
+        // Bait them into running, then close
+        const baitDefender = defenders.reduce((nearest, d) => {
+          return dist(d, lw) < dist(nearest, lw) ? d : nearest;
+        }, defenders[0]);
+        if (baitDefender) {
+          // First, show space
+          moveToward(baitDefender, baitDefender.x - 20, baitDefender.y, 3);
+          // Then close when they run (simulated)
+          setTimeout(() => {
+            moveToward(baitDefender, lw.x + 20, lw.y, 7);
+            addFatigue(baitDefender, tactic.fatigueMod);
+            baitDefender.sprints++;
+          }, 100);
+        }
+      }
+      break;
+  }
+}
+
+function nullifyRun(attacker) {
+  // Check if any defensive tactic is active
+  const defenders = teamB.filter(p => !p.subbed && p.pos !== 'GK');
+  
+  // Drop deep nullifies runs behind
+  if (restDefenseShape === 'deep') {
+    runsNullified++;
+    addEvent(`🛡️ Drop deep nullifies ${attacker.pos}'s run`, 'defense');
+    return 0.8;
+  }
+  
+  // Force wide nullifies diagonal runs
+  if (Math.random() > 0.6) {
+    runsNullified++;
+    applyDefensiveTactic('forceWide');
+    addEvent(`🛡️ Forced ${attacker.pos} wide`, 'defense');
+    return 0.6;
+  }
+  
+  // Block passing lanes
+  if (Math.random() > 0.5) {
+    runsNullified++;
+    applyDefensiveTactic('blockLanes');
+    addEvent(`🛡️ Passing lane blocked`, 'defense');
+    return 0.5;
+  }
+  
+  return 0;
+}
+
+function preventDangerousPass(passer) {
+  // Apply defensive pressure to prevent through ball
+  const defenders = teamB.filter(p => !p.subbed && p.pos !== 'GK');
+  
+  // Press the passer
+  const nearestDef = defenders.reduce((nearest, d) => {
+    return dist(d, passer) < dist(nearest, passer) ? d : nearest;
+  }, defenders[0]);
+  
+  if (nearestDef && dist(nearestDef, passer) < 80) {
+    passesPrevented++;
+    applyDefensiveTactic('pressHigh');
+    addEvent(`🛡️ Pressing ${passer.pos} - preventing through ball`, 'defense');
+    return 0.7;
+  }
+  
+  // Block passing lanes
+  if (Math.random() > 0.5) {
+    passesPrevented++;
+    applyDefensiveTactic('blockLanes');
+    return 0.5;
+  }
+  
+  return 0;
+}
+
+function wasteAttackerEnergy() {
+  // Make attackers run unnecessarily
+  const attackers = teamA.filter(p => p.pos !== 'GK');
+  
+  attackers.forEach(a => {
+    // Bait them into a run
+    if (Math.random() > 0.7) {
+      applyDefensiveTactic('baitRun');
+      // Attacker wastes energy on fake run
+      addFatigue(a, 0.3);
+      a.sprints++;
+      addEvent(`🎭 ${a.pos} wasted energy on bait run`, 'defense');
+    }
+  });
+}
+
+// ==================== PASS PATTERNS ====================
+
+function normalPass() {
+  const attackers = teamA.filter(p => p.pos !== 'GK');
+  const from = attackers[Math.floor(Math.random() * attackers.length)];
+  const to = attackers[Math.floor(Math.random() * attackers.length)];
+  if (from === to) return;
+  
+  // Update offside line
+  updateOffsideLine();
+  
+  // Check if defenders should trigger offside trap
+  if (Math.random() > 0.8 && ball.x > 400) {
+    triggerOffsideTrap();
+  }
+  
+  // Update rest defense
+  updateRestDefense();
+  
+  // Check counter-attack exposure
+  counterAttackExposure();
+  
+  // Apply defensive tactics
+  if (Math.random() > 0.6) {
+    const tactics = ['dropDeep', 'forceWide', 'blockLanes', 'doubleUp'];
+    applyDefensiveTactic(tactics[Math.floor(Math.random() * tactics.length)]);
+  }
+  
+  // Try to nullify runs
+  const nullifyChance = nullifyRun(to);
+  if (nullifyChance > 0.5) {
+    addEvent(`🛡️ Run nullified by defense`, 'defense');
+  }
+  
+  // Try to prevent dangerous pass
+  const preventChance = preventDangerousPass(from);
+  
+  // Waste attacker energy
+  if (Math.random() > 0.7) {
+    wasteAttackerEnergy();
+  }
+  
+  const passType = Math.random() > 0.7 ? 'driven' : 'ground';
+  const touchDir = Math.random() > 0.5 ? 'forward' : 'lateral';
+  
+  // Use energy-efficient run for receiver
+  if (Math.random() > 0.5) {
+    const runType = Math.random() > 0.5 ? 'channel' : 'stretchWide';
+    energyEfficientRun(to, runType);
+  }
+  
+  executePass(from, to, passType, touchDir);
+}
+
+function targetCBPass() {
+  const targets = teamB.filter(p => p.targeted && !p.subbed);
+  if (!targets.length) return normalPass();
+  const target = targets[Math.floor(Math.random() * targets.length)];
+  const wing = Math.random() > 0.5 ? teamA.find(p=>p.id==='LW_A') : teamA.find(p=>p.id==='RW_A');
+  
+  // Play dummy first
+  if (Math.random() > 0.5) {
+    const dummyTarget = teamA.find(p=>p.id==='ST_A');
+    playDummy(wing, {x: wing.x + 40, y: wing.y});
+  }
+  
+  const throughY = target.y + (Math.random() > 0.5 ? -80 : 80);
+  const receiver = teamA.find(p=>p.id==='ST_A');
+  receiver.y = Math.max(PITCH.y+30, Math.min(PITCH.y+PITCH.h-30, throughY));
+  
+  executePass(wing, receiver, 'through', 'forward');
+  moveToward(target, ball.x, ball.y - 20, 8);
+  addFatigue(target, 1.2);
+  teamB.filter(p => !p.subbed && p !== target).forEach(p => addFatigue(p, 0.2));
+}
+
+function targetFBPass() {
+  const target = teamB.find(p => p.id === 'LB_B' && !p.subbed);
+  if (!target) return normalPass();
+  const lw = teamA.find(p => p.id === 'LW_A');
+  const lb_a = teamA.find(p => p.id === 'LB_A');
+  
+  // Dummy run by CM to create space
+  const cm1 = teamA.find(p=>p.id==='CM_A1');
+  playDummy(cm1, {x: cm1.x + 50, y: lw.y});
+  
+  // Pass to LW
+  executePass(lb_a, lw, 'ground', 'forward');
+  moveToward(target, lw.x, lw.y, 7);
+  addFatigue(target, 1.0);
+  
+  // Quick switch to RW
+  setTimeout(() => {
+    const rw = teamA.find(p => p.id === 'RW_A');
+    executePass(lw, rw, 'long', 'lateral');
+    moveToward(target, rw.x - 40, rw.y, 7);
+    addFatigue(target, 1.5);
+  }, 100);
+  
+  teamB.filter(p => !p.subbed && p !== target).forEach(p => addFatigue(p, 0.15));
+}
+
+function targetDMPass() {
+  const target = teamB.find(p => p.id === 'DM_B' && !p.subbed);
+  if (!target) return normalPass();
+  const lw = teamA.find(p => p.id === 'LW_A');
+  const rw = teamA.find(p => p.id === 'RW_A');
+  const cm1 = teamA.find(p=>p.id==='CM_A1');
+  
+  const side = Math.random() > 0.5 ? lw : rw;
+  
+  // Fake to one side, go to other
+  if (Math.random() > 0.5) {
+    playDummy(cm1, {x: side.x, y: side.y});
+  }
+  
+  executePass(cm1, side, 'ground', 'lateral');
+  moveToward(target, side.x, side.y - 30, 6);
+  addFatigue(target, 0.8);
+  
+  // Quick switch
+  setTimeout(() => {
+    const other = side === lw ? rw : lw;
+    executePass(side, other, 'driven', 'forward');
+    moveToward(target, other.x, other.y - 30, 6);
+    addFatigue(target, 1.2);
+  }, 80);
+  
+  teamB.filter(p => !p.subbed && p !== target).forEach(p => addFatigue(p, 0.15));
+}
+
+function switchPlayPass() {
+  const lw = teamA.find(p => p.id === 'LW_A');
+  const rw = teamA.find(p => p.id === 'RW_A');
+  const cm1 = teamA.find(p=>p.id==='CM_A1');
+  const cm3 = teamA.find(p=>p.id==='CM_A3');
+  
+  // Build up on left
+  executePass(cm1, lw, 'ground', 'forward');
+  
+  // Dummy by CM to freeze defenders
+  playDummy(cm3, {x: rw.x - 20, y: rw.y});
+  
+  // Long switch to right
+  setTimeout(() => {
+    executePass(lw, rw, 'long', 'lateral');
+    teamB.filter(p => !p.subbed && p.pos !== 'GK').forEach(p => {
+      moveToward(p, p.x + (ball.y > 210 ? 30 : -30), p.y + (Math.random()-0.5)*40, 6);
+      addFatigue(p, 0.6);
+      p.sprints++;
+    });
+  }, 80);
+}
+
+function doubleSwitchPass() {
+  const lw = teamA.find(p => p.id === 'LW_A');
+  const rw = teamA.find(p => p.id === 'RW_A');
+  const cm1 = teamA.find(p=>p.id==='CM_A1');
+  const cm2 = teamA.find(p=>p.id==='CM_A2');
+  const cm3 = teamA.find(p=>p.id==='CM_A3');
+  
+  // First switch: left
+  executePass(cm1, lw, 'ground', 'forward');
+  
+  // Dummy run by CM to freeze defenders
+  playDummy(cm2, {x: 350, y: 210});
+  
+  // Second switch: right
+  setTimeout(() => {
+    executePass(lw, rw, 'long', 'lateral');
+    // Force ALL defenders to sprint across
+    teamB.filter(p => !p.subbed && p.pos !== 'GK').forEach(p => {
+      const sprintDist = 80 + Math.random() * 40;
+      moveToward(p, p.x + (ball.y > 210 ? 50 : -50), p.y + (Math.random()-0.5)*30, 7);
+      addFatigue(p, 0.9);
+      p.sprints++;
+      p.sprintDist += sprintDist;
+    });
+  }, 60);
+  
+  // Third switch: back to left
+  setTimeout(() => {
+    // Another dummy
+    playDummy(cm3, {x: 400, y: 100});
+    
+    executePass(rw, lw, 'long', 'forward');
+    teamB.filter(p => !p.subbed && p.pos !== 'GK').forEach(p => {
+      moveToward(p, p.x + (ball.y > 210 ? -40 : 40), p.y + (Math.random()-0.5)*30, 7);
+      addFatigue(p, 1.0);
+      p.sprints++;
+    });
+  }, 120);
+}
+
+function overloadPass() {
+  const lw = teamA.find(p => p.id === 'LW_A');
+  const lb = teamA.find(p => p.id === 'LB_A');
+  const cm1 = teamA.find(p => p.id === 'CM_A1');
+  
+  // Dummy run by CM to create space
+  playDummy(cm1, {x: lw.x - 30, y: lw.y + 50});
+  
+  // Pass to LW
+  executePass(lb, lw, 'ground', 'forward');
+  
+  const target = teamB.find(p => p.id === 'LB_B' && !p.subbed);
+  const cb = teamB.find(p => p.id === 'CB_B1' && !p.subbed);
+  if (target) moveToward(target, ball.x, ball.y, 7);
+  if (cb) moveToward(cb, ball.x, ball.y + 30, 5);
+  addFatigue(target, 1.0);
+  if (cb) addFatigue(cb, 0.7);
+  
+  // Switch to RW
+  setTimeout(() => {
+    const rw = teamA.find(p => p.id === 'RW_A');
+    executePass(lw, rw, 'long', 'lateral');
+    if (target) { moveToward(target, 400, 60, 7); addFatigue(target, 1.3); }
+  }, 100);
+  
+  teamB.filter(p => !p.subbed).forEach(p => { if (p.pos !== 'GK') addFatigue(p, 0.1); });
+}
+
+function overloadSwitchPass() {
+  const lw = teamA.find(p => p.id === 'LW_A');
+  const lb = teamA.find(p => p.id === 'LB_A');
+  const cm1 = teamA.find(p => p.id === 'CM_A1');
+  const cm3 = teamA.find(p => p.id === 'CM_A3');
+  
+  // Dummy to freeze defenders
+  playDummy(cm1, {x: lw.x - 20, y: lw.y + 60});
+  
+  // Phase 1: Overload left
+  executePass(lb, lw, 'ground', 'forward');
+  const lbTarget = teamB.find(p => p.id === 'LB_B' && !p.subbed);
+  const cb1 = teamB.find(p => p.id === 'CB_B1' && !p.subbed);
+  if (lbTarget) moveToward(lbTarget, ball.x, ball.y, 7);
+  if (cb1) moveToward(cb1, ball.x - 30, ball.y + 40, 5);
+  addFatigue(lbTarget, 1.2);
+  if (cb1) addFatigue(cb1, 0.8);
+  
+  // Phase 2: Rapid switch
+  setTimeout(() => {
+    const rw = teamA.find(p => p.id === 'RW_A');
+    playDummy(cm3, {x: 400, y: 200});
+    executePass(lw, rw, 'long', 'lateral');
+    // Force LB to sprint across
+    if (lbTarget) { moveToward(lbTarget, 400, 360, 8); addFatigue(lbTarget, 2.0); lbTarget.sprints++; }
+    // Force DM to cover
+    const dm = teamB.find(p => p.id === 'DM_B' && !p.subbed);
+    if (dm) { moveToward(dm, 400, 300, 6); addFatigue(dm, 1.0); dm.sprints++; }
+  }, 80);
+}
+
+function throughBallPass() {
+  const targetCB = teamB.find(p => p.id === 'CB_B1' && !p.subbed);
+  const cm = teamA.find(p=>p.id==='CM_A2');
+  const st = teamA.find(p=>p.id==='ST_A');
+  
+  // Dummy run by striker to create channel
+  playDummy(st, {x: st.x + 30, y: st.y + 50});
+  
+  // Through ball
+  const throughX = 500;
+  const throughY = targetCB ? targetCB.y + 40 : 200;
+  st.y = throughY;
+  
+  executePass(cm, st, 'through', 'forward');
+  
+  if (targetCB) {
+    moveToward(targetCB, throughX, throughY, 8);
+    addFatigue(targetCB, 1.5);
+    targetCB.sprints++;
+    targetCB.sprintDist += 70;
+  }
+  teamB.filter(p => !p.subbed && p.pos !== 'GK' && p !== targetCB).forEach(p => {
+    addFatigue(p, 0.3);
+    p.sprints++;
+  });
+}
+
+function verticalStretchPass() {
+  const st = teamA.find(p => p.id === 'ST_A');
+  const cm = teamA.find(p => p.id === 'CM_A2');
+  const cm1 = teamA.find(p => p.id === 'CM_A1');
+  
+  // Dummy run by CM to pull defenders
+  playDummy(cm1, {x: cm.x + 80, y: cm.y + 40});
+  
+  // Phase 1: Short pass to draw defense forward
+  executePass(cm, cm1, 'ground', 'backward');
+  
+  // Force CBs to step up
+  const cb1 = teamB.find(p => p.id === 'CB_B1' && !p.subbed);
+  const cb2 = teamB.find(p => p.id === 'CB_B2' && !p.subbed);
+  if (cb1) { moveToward(cb1, cb1.x - 40, cb1.y, 5); addFatigue(cb1, 0.6); }
+  if (cb2) { moveToward(cb2, cb2.x - 40, cb2.y, 5); addFatigue(cb2, 0.6); }
+  
+  // Phase 2: Long ball over the top
+  setTimeout(() => {
+    const throughY = st.y + (Math.random() > 0.5 ? -30 : 30);
+    st.y = throughY;
+    executePass(cm1, st, 'long', 'forward');
+    // Force CBs to sprint BACK
+    if (cb1) { moveToward(cb1, 480, ball.y - 20, 8); addFatigue(cb1, 1.5); cb1.sprints++; }
+    if (cb2) { moveToward(cb2, 480, ball.y + 20, 8); addFatigue(cb2, 1.5); cb2.sprints++; }
+    // DM must cover space
+    const dm = teamB.find(p => p.id === 'DM_B' && !p.subbed);
+    if (dm) { moveToward(dm, 420, ball.y, 6); addFatigue(dm, 0.8); }
+  }, 80);
+}
+
+function midfieldTrapPass() {
+  const cm1 = teamA.find(p => p.id === 'CM_A1');
+  const cm2 = teamA.find(p => p.id === 'CM_A2');
+  const cm3 = teamA.find(p => p.id === 'CM_A3');
+  
+  // Rapid one-touch passes through midfield
+  const passSequence = [
+    { from: cm1, to: cm2, type: 'ground' },
+    { from: cm2, to: cm3, type: 'driven' },
+    { from: cm3, to: cm1, type: 'ground' },
+    { from: cm1, to: cm2, type: 'driven' },
+    { from: cm2, to: cm3, type: 'ground' },
+  ];
+  
+  const targets = teamB.filter(p => !p.subbed && (p.pos === 'DM' || p.pos === 'CM'));
+  
+  passSequence.forEach((pass, i) => {
+    setTimeout(() => {
+      // Dummy by non-involved CM
+      if (i % 2 === 0 && cm3 !== pass.to) {
+        playDummy(cm3, {x: pass.to.x + 30, y: pass.to.y + 40});
+      }
+      
+      executePass(pass.from, pass.to, pass.type, 'lateral');
+      
+      // Force midfielders to shift
+      targets.forEach(t => {
+        moveToward(t, ball.x + (Math.random()-0.5)*40, ball.y + (Math.random()-0.5)*40, 5);
+        addFatigue(t, 0.5);
+      });
+    }, i * 50);
+  });
+}
+
+function pressBaitPass() {
+  const gk = teamA.find(p => p.id === 'GK_A');
+  const cb1 = teamA.find(p => p.id === 'CB_A1');
+  const cm2 = teamA.find(p => p.id === 'CM_A2');
+  
+  // Dummy by CB to invite press
+  playDummy(cb1, {x: cb1.x + 30, y: cb1.y});
+  
+  // Phase 1: Play back to GK (invite press)
+  executePass(cb1, gk, 'ground', 'backward');
+  
+  // Force ST to press
+  const st = teamB.find(p => p.id === 'ST_B' && !p.subbed);
+  if (st) { moveToward(st, ball.x - 20, ball.y, 7); addFatigue(st, 0.8); }
+  
+  // Phase 2: Clip over pressing ST
+  setTimeout(() => {
+    // Another dummy to freeze CMs
+    playDummy(cm2, {x: 300, y: 100});
+    
+    const targetY = 80 + Math.random() * 280;
+    cm2.y = targetY;
+    executePass(gk, cm2, 'lobbed', 'forward');
+    
+    // Force CMs to recover
+    const cms = teamB.filter(p => !p.subbed && p.pos === 'CM');
+    cms.forEach(cm => {
+      moveToward(cm, ball.x, ball.y, 6);
+      addFatigue(cm, 0.7);
+      cm.sprints++;
+    });
+    // ST must sprint back
+    if (st) { moveToward(st, ball.x - 40, ball.y, 8); addFatigue(st, 1.2); st.sprints++; }
+  }, 80);
+}
+
+const passFunctions = {
+  normal: normalPass,
+  targetCB: targetCBPass,
+  targetFB: targetFBPass,
+  targetDM: targetDMPass,
+  switchPlay: switchPlayPass,
+  doubleSwitch: doubleSwitchPass,
+  overload: overloadPass,
+  overloadSwitch: overloadSwitchPass,
+  throughBall: throughBallPass,
+  verticalStretch: verticalStretchPass,
+  midfieldTrap: midfieldTrapPass,
+  pressBait: pressBaitPass,
+};
+
+function update(dt) {
+  gameSecond += dt * speed;
+  if (gameSecond >= 60) { gameSecond -= 60; gameMinute++; }
+  if (gameMinute >= 90) { gameMinute = 90; speed = 0; showSummary(); }
+
+  // Passive fatigue recovery
+  teamB.filter(p => !p.subbed).forEach(p => {
+    p.fatigue = Math.max(0, p.fatigue - 0.002 * speed);
+  });
+
+  // Generate passes
+  if (Date.now() - lastPassTime > 600 / speed) {
+    passFunctions[pattern]();
+    sequences++;
+    lastPassTime = Date.now();
+    passLines = passLines.filter(l => Date.now() - l.time < 800);
+  }
+
+  // Team A natural fatigue
+  teamA.forEach(p => { addFatigue(p, 0.01); });
+}
+
+function substitutePlayer(playerId) {
+  if (subsRemaining <= 0) return;
+  const player = teamB.find(p => p.id === playerId);
+  if (!player || player.subbed) return;
+  
+  // Find appropriate bench player
+  const posType = player.pos === 'LB' || player.pos === 'RB' || player.pos === 'CB' ? 'DEF' :
+                  player.pos === 'DM' || player.pos === 'CM' ? 'MID' : 'FWD';
+  const benchIdx = bench.findIndex(b => b.pos === posType && !b.used);
+  if (benchIdx === -1) return;
+  
+  const sub = bench[benchIdx];
+  sub.used = true;
+  
+  // Reset player with fresh legs (not fully fresh - 20% fatigue from warming up)
+  player.fatigue = 20;
+  player.subbed = false;
+  player.targeted = false;
+  player.id = `${player.id}_SUB`;
+  player.subbed_in = gameMinute;
+  
+  subsRemaining--;
+  addEvent(`🔄 Substitution: ${sub.id} replaces tired ${player.pos} at ${gameMinute}'`, 'sub');
+  markTargets();
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Pitch
+  ctx.fillStyle = '#2d5a27';
+  ctx.fillRect(PITCH.x, PITCH.y, PITCH.w, PITCH.h);
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(PITCH.x, PITCH.y, PITCH.w, PITCH.h);
+  ctx.beginPath();
+  ctx.moveTo(PITCH.x + PITCH.w/2, PITCH.y);
+  ctx.lineTo(PITCH.x + PITCH.w/2, PITCH.y + PITCH.h);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(PITCH.x + PITCH.w/2, PITCH.y + PITCH.h/2, 40, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeRect(PITCH.x, PITCH.y + PITCH.h/2 - 70, 60, 140);
+  ctx.strokeRect(PITCH.x + PITCH.w - 60, PITCH.y + PITCH.h/2 - 70, 60, 140);
+
+  // Pass lines
+  passLines.forEach(line => {
+    const age = (Date.now() - line.time) / 800;
+    const alpha = Math.max(0, 1 - age);
+    ctx.strokeStyle = `${line.color || 'rgba(255, 255, 100,'} ${alpha})`;
+    ctx.lineWidth = 2;
+    ctx.setLineDash(line.dash || [5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(line.x1, line.y1);
+    ctx.lineTo(line.x2, line.y2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  });
+  
+  // Dummy lines (faded)
+  dummyLines.forEach(line => {
+    const age = (Date.now() - line.time) / 600;
+    const alpha = Math.max(0, 0.4 - age * 0.4);
+    ctx.strokeStyle = `rgba(150, 150, 255, ${alpha})`;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(line.x1, line.y1);
+    ctx.lineTo(line.x2, line.y2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  });
+
+  // Players
+  const allPlayers = [...teamA, ...teamB];
+  allPlayers.forEach(p => {
+    if (p.subbed && p.pos !== 'GK') return;
+    const r = p.pos === 'GK' ? 10 : 8;
+    
+    // Targeted glow
+    if (p.targeted && p.fatigue > 50) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r + 4 + p.fatigue * 0.05, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(255, 68, 68, ${0.2 + p.fatigue * 0.003})`;
+      ctx.fill();
+    }
+    
+    // Player circle
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = p.targeted ? '#ff4444' : p.color;
+    ctx.fill();
+    ctx.strokeStyle = p.fatigue > 80 ? '#ff0' : '#fff';
+    ctx.lineWidth = p.fatigue > 80 ? 2 : 1;
+    ctx.stroke();
+    
+    // Position label
+    ctx.fillStyle = '#fff';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(p.pos, p.x, p.y + r + 10);
+    
+    // Stamina bar above player (unique for each player)
+    if (p.pos !== 'GK') {
+      const barWidth = 28;
+      const barHeight = 5;
+      const barX = p.x - barWidth / 2;
+      const barY = p.y - r - 14;
+      
+      // Background (empty bar)
+      ctx.fillStyle = '#1a1a1a';
+      ctx.strokeStyle = '#444';
+      ctx.lineWidth = 1;
+      ctx.fillRect(barX, barY, barWidth, barHeight);
+      ctx.strokeRect(barX, barY, barWidth, barHeight);
+      
+      // Fill based on STAMINA (100 - fatigue)
+      const stamina = 100 - p.fatigue;
+      let barColor;
+      if (stamina > 70) barColor = '#44ff44';
+      else if (stamina > 50) barColor = '#ffcc00';
+      else if (stamina > 30) barColor = '#ff8800';
+      else barColor = '#ff2222';
+      
+      ctx.fillStyle = barColor;
+      ctx.fillRect(barX + 1, barY + 1, (barWidth - 2) * (stamina / 100), barHeight - 2);
+      
+      // Stamina percentage text
+      ctx.fillStyle = stamina < 40 ? '#ff4444' : '#fff';
+      ctx.font = 'bold 8px sans-serif';
+      ctx.fillText(Math.round(stamina), p.x, barY - 2);
+      
+      // Wall indicator
+      if (p.fatigue >= 80) {
+        ctx.fillStyle = '#ff0000';
+        ctx.font = 'bold 9px sans-serif';
+        ctx.fillText('⚠ WALL', p.x, barY - 8);
+      }
+    }
+  });
+
+  // Ball
+  ctx.beginPath();
+  ctx.arc(ball.x, ball.y, 5, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Offside line (dashed blue line)
+  if (offsideLine > 0) {
+    ctx.strokeStyle = 'rgba(100, 150, 255, 0.6)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 4]);
+    ctx.beginPath();
+    ctx.moveTo(offsideLine, PITCH.y);
+    ctx.lineTo(offsideLine, PITCH.y + PITCH.h);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    
+    // Offside line label
+    ctx.fillStyle = 'rgba(100, 150, 255, 0.8)';
+    ctx.font = '10px sans-serif';
+    ctx.fillText('Offside Line', offsideLine + 5, PITCH.y + 15);
+  }
+  
+  // Rest defense shape indicator
+  const restDefColor = restDefenseShape === 'deep' ? '#ff8800' : 
+                       restDefenseShape === 'compact' ? '#44ff44' : '#8888ff';
+  ctx.fillStyle = restDefColor;
+  ctx.font = '10px sans-serif';
+  ctx.fillText(`Rest Defense: ${restDefenseShape}`, PITCH.x + 10, PITCH.y + 15);
+
+  // Target indicators
+  teamB.filter(p => p.targeted && !p.subbed).forEach(p => {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 14, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(255, 68, 68, ${0.5 + Math.sin(Date.now()/200) * 0.3})`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  });
+
+  // Wall warnings
+  teamB.filter(p => p.fatigue >= 80 && !p.subbed).forEach(p => {
+    ctx.fillStyle = '#ff4444';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('⚠ WALL', p.x, p.y - 18);
+  });
+}
+
+function renderPlayerCards() {
+  const container = document.getElementById('player-cards');
+  let html = '';
+  teamB.filter(p => p.pos !== 'GK').forEach(p => {
+    const wallAt = wallWarnings[p.id];
+    const cardClass = p.subbed ? 'subbed' : p.targeted ? 'targeted' : 'normal';
+    const fColor = p.fatigue > 70 ? '#ff4444' : p.fatigue > 40 ? '#ffaa00' : '#44cc44';
+    const subInfo = p.subbed_in ? ` (subbed ${p.subbed_in}')` : '';
+    html += `
+      <div class="player-card ${cardClass}">
+        <div class="player-name">${p.id} ${p.targeted ? '🎯' : ''} ${p.subbed ? '🔄' : ''}</div>
+        <div class="player-pos">${p.pos}${subInfo} ${wallAt ? `<span class="wall-indicator">WALL @ ${wallAt}'</span>` : ''}</div>
+        <div class="fatigue-bar"><div class="fatigue-fill" style="width:${p.fatigue}%;background:${fColor}"></div></div>
+        <div class="fatigue-label"><span>${Math.round(p.fatigue)}% fatigue</span><span>${p.sprints} sprints</span></div>
+      </div>`;
+  });
+  container.innerHTML = html;
+}
+
+function renderSubButtons() {
+  const container = document.getElementById('sub-buttons');
+  document.getElementById('sub-count').textContent = subsRemaining;
+  let html = '';
+  teamB.filter(p => p.pos !== 'GK' && !p.subbed && p.fatigue > 60).forEach(p => {
+    html += `<button class="sub-btn" onclick="substitutePlayer('${p.id}')" ${subsRemaining<=0?'disabled':''}>Sub ${p.pos} (${Math.round(p.fatigue)}%)</button>`;
+  });
+  container.innerHTML = html || '<span style="font-size:0.7em;color:#666;">No players above 60% fatigue</span>';
+}
+
+function renderEvents() {
+  const container = document.getElementById('event-list');
+  container.innerHTML = events.map(e => 
+    `<div class="event-item ${e.type}">${e.time} - ${e.text}</div>`
+  ).join('');
+}
+
+function updateStats() {
+  document.getElementById('clock').textContent = `${String(gameMinute).padStart(2,'0')}:${String(Math.floor(gameSecond)).padStart(2,'0')}`;
+  document.getElementById('stat-pattern').textContent = document.getElementById('pat-' + pattern)?.textContent || pattern;
+  document.getElementById('stat-seq').textContent = sequences;
+  document.getElementById('stat-passes').textContent = totalPasses;
+  document.getElementById('stat-accuracy').textContent = totalPasses > 0 ? Math.round(successfulPasses / totalPasses * 100) + '%' : '0%';
+  document.getElementById('stat-dummies').textContent = dummiesPlayed;
+  document.getElementById('stat-offsideTraps').textContent = offsideTrapsTriggered;
+  document.getElementById('stat-offsides').textContent = offsidesCaught;
+  document.getElementById('stat-counterExposures').textContent = counterAttackExposures;
+  document.getElementById('stat-runsNullified').textContent = runsNullified;
+  document.getElementById('stat-passesPrevented').textContent = passesPrevented;
+  const activeB = teamB.filter(p=>p.pos!=='GK' && !p.subbed);
+  const avgB = activeB.reduce((s,p)=>s+p.fatigue,0) / (activeB.length || 1);
+  const avgA = teamA.filter(p=>p.pos!=='GK').reduce((s,p)=>s+p.fatigue,0) / 10;
+  document.getElementById('stat-avgA').textContent = Math.round(avgA) + '%';
+  document.getElementById('stat-avgB').textContent = Math.round(avgB) + '%';
+  document.getElementById('stat-avgB').style.color = avgB > 50 ? '#ff4444' : '#fff';
+}
+
+function showSummary() {
+  const box = document.getElementById('summary-box');
+  const targeted = teamB.filter(p => p.targeted && !p.subbed);
+  const wallPlayers = targeted.filter(p => p.fatigue >= 80);
+  const avgTargeted = targeted.reduce((s,p) => s+p.fatigue, 0) / (targeted.length || 1);
+  const avgOthers = teamB.filter(p => !p.targeted && p.pos !== 'GK' && !p.subbed).reduce((s,p) => s+p.fatigue, 0) / (teamB.filter(p => !p.targeted && p.pos !== 'GK' && !p.subbed).length || 1);
+
+  box.style.display = 'block';
+  document.getElementById('summary-title').textContent = 'Match Analysis';
+  document.getElementById('summary-text').innerHTML = `
+    <b>Pattern:</b> ${pattern}<br>
+    <b>Targeted players avg fatigue:</b> ${Math.round(avgTargeted)}%<br>
+    <b>Non-targeted avg fatigue:</b> ${Math.round(avgOthers)}%<br>
+    <b>Fatigue differential:</b> ${Math.round(avgTargeted - avgOthers)}%<br>
+    <b>Players at wall (≥80%):</b> ${wallPlayers.map(p=>p.id).join(', ') || 'None'}<br>
+    <b>Subs used:</b> ${5 - subsRemaining}/5<br>
+    <b>Total passes:</b> ${totalPasses}<br>
+    <br><i>Targeting forced ${Math.round(avgTargeted - avgOthers)}% extra fatigue on designated players.</i>
+  `;
+}
+
+function setPattern(p) {
+  pattern = p;
+  markTargets();
+  document.querySelectorAll('.controls button').forEach(b => b.classList.remove('active'));
+  document.getElementById('pat-' + p)?.classList.add('active');
+}
+
+function setSpeed(s) {
+  speed = s;
+  document.querySelectorAll('.speed-controls button').forEach(b => b.classList.remove('active'));
+  if (s === 0) document.getElementById('btn-pause').classList.add('active');
+  if (s === 1) document.getElementById('btn-1x').classList.add('active');
+  if (s === 3) document.getElementById('btn-3x').classList.add('active');
+  if (s === 10) document.getElementById('btn-10x').classList.add('active');
+}
+
+function resetSim() {
+  gameMinute = 0; gameSecond = 0; sequences = 0; totalPasses = 0;
+  successfulPasses = 0; interceptedPasses = 0; dummiesPlayed = 0;
+  offsideTrapsTriggered = 0; offsidesCaught = 0; counterAttackExposures = 0;
+  runsNullified = 0; passesPrevented = 0;
+  offsideLine = 0; offsideTrapActive = false; restDefenseShape = 'balanced';
+  passLines = []; dummyLines = []; wallWarnings = {}; events = [];
+  subsRemaining = 5; subLog = [];
+  bench.forEach(b => b.used = false);
+  document.getElementById('summary-box').style.display = 'none';
+  // Reset team B to original state
+  const origIds = ['LB_B','CB_B1','CB_B2','RB_B','DM_B','CM_B1','CM_B2','LW_B','ST_B','RW_B'];
+  teamB.forEach((p, i) => {
+    if (i === 0) return;
+    p.id = origIds[i-1];
+    p.fatigue = 0; p.sprints = 0; p.sprintDist = 0; p.totalDist = 0;
+    p.targeted = false; p.subbed = false; p.subbed_in = null;
+  });
+  teamA.forEach(p => { p.fatigue = 0; p.sprints = 0; p.sprintDist = 0; p.totalDist = 0; });
+  ball = { x: 250, y: 210 };
+  speed = 1;
+  setSpeed(1);
+}
+
+let lastTime = performance.now();
+function gameLoop(now) {
+  const dt = (now - lastTime) / 1000;
+  lastTime = now;
+  if (speed > 0) update(dt * 15);
+  render();
+  updateStats();
+  renderPlayerCards();
+  renderSubButtons();
+  renderEvents();
+  requestAnimationFrame(gameLoop);
+}
+
+markTargets();
+requestAnimationFrame(gameLoop);
+
+window.render_game_to_text = () => JSON.stringify({
+  minute: gameMinute, second: Math.floor(gameSecond), pattern,
+  ball, sequences, totalPasses, subsRemaining,
+  teamB: teamB.filter(p=>!p.subbed).map(p => ({ id:p.id, pos:p.pos, fatigue:Math.round(p.fatigue), sprints:p.sprints, targeted:!!p.targeted }))
+});
+window.advanceTime = (ms) => { for(let i=0;i<ms/16;i++) update(0.25); };
+</script>
+</body>
+</html>
