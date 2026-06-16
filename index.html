@@ -972,10 +972,14 @@ function overloadPass() {
   
   const target = teamB.find(p => p.id === 'LB_B' && !p.subbed);
   const cb = teamB.find(p => p.id === 'CB_B1' && !p.subbed);
-  if (target) moveToward(target, ball.x, ball.y, 7);
-  if (cb) moveToward(cb, ball.x, ball.y + 30, 5);
-  addFatigue(target, 1.0);
-  if (cb) addFatigue(cb, 0.7);
+  if (target) {
+    moveToward(target, ball.x, ball.y, 7);
+    addFatigue(target, 1.0);
+  }
+  if (cb) {
+    moveToward(cb, ball.x, ball.y + 30, 5);
+    addFatigue(cb, 0.7);
+  }
   
   // Switch to RW
   setTimeout(() => {
@@ -1493,15 +1497,20 @@ function resetSim() {
 }
 
 let lastTime = performance.now();
+let lastDOMRender = 0;
 function gameLoop(now) {
   const dt = (now - lastTime) / 1000;
   lastTime = now;
   if (speed > 0) update(dt * 15);
   render();
   updateStats();
-  renderPlayerCards();
-  renderSubButtons();
-  renderEvents();
+  // Throttle heavy DOM renders to every 500ms for stability
+  if (now - lastDOMRender > 500) {
+    renderPlayerCards();
+    renderSubButtons();
+    renderEvents();
+    lastDOMRender = now;
+  }
   requestAnimationFrame(gameLoop);
 }
 
