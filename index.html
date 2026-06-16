@@ -870,12 +870,12 @@ function normalPass() {
   executePass(from, to, passType, touchDir);
   
   // Add fatigue to nearby defenders (scaled for realistic buildup)
-  // Target: players hit wall around 60-75 min for targeted, 75-90 for others
+  // Target: targeted players hit wall ~45-60 min, others ~60-75 min
   teamB.filter(p => !p.subbed && p.pos !== 'GK').forEach(p => {
     const d = dist(p, to);
-    if (d < 80) addFatigue(p, 0.25);
-    else if (d < 120) addFatigue(p, 0.15);
-    else if (d < 160) addFatigue(p, 0.08);
+    if (d < 80) addFatigue(p, 0.35);
+    else if (d < 120) addFatigue(p, 0.22);
+    else if (d < 160) addFatigue(p, 0.12);
   });
 }
 
@@ -999,7 +999,7 @@ function doubleSwitchPass() {
     teamB.filter(p => !p.subbed && p.pos !== 'GK').forEach(p => {
       const sprintDist = 60 + Math.random() * 30;
       moveToward(p, p.x + (ball.y > 210 ? 40 : -40), p.y + (Math.random()-0.5)*25, 6);
-      addFatigue(p, 0.3);
+      addFatigue(p, 0.45);
       p.sprints++;
       p.sprintDist += sprintDist;
     });
@@ -1013,7 +1013,7 @@ function doubleSwitchPass() {
     executePass(rw, lw, 'long', 'forward');
     teamB.filter(p => !p.subbed && p.pos !== 'GK').forEach(p => {
       moveToward(p, p.x + (ball.y > 210 ? -30 : 30), p.y + (Math.random()-0.5)*25, 6);
-      addFatigue(p, 0.35);
+      addFatigue(p, 0.5);
       p.sprints++;
     });
   }, 120);
