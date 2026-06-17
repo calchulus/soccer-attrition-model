@@ -286,59 +286,99 @@ function addFatigue(player, amount) {
   const bonus = player.targeted ? 1.5 : 1.0;
   player.fatigue = Math.min(100, player.fatigue + amount * bonus);
   
+  // Initialize tracking properties
+  if (!player.wallHits) player.wallHits = [];
+  if (player.cramps === undefined) player.cramps = 0;
+  if (player.muscleDamage === undefined) player.muscleDamage = 0;
+  if (player.fatigueExposure === undefined) player.fatigueExposure = 0;
+  if (player.lastCrampMinute === undefined) player.lastCrampMinute = -100;
+  if (player.injuryMultiplier === undefined) player.injuryMultiplier = 1.0;
+  
   // Track cumulative fatigue exposure (total time above 70%)
   if (player.fatigue > 70) {
-    player.fatigueExposure = (player.fatigueExposure || 0) + 0.1;
+    player.fatigueExposure += 0.1;
   }
   
-  // Track wall hits (can hit multiple times)
+  // Update post-cramp vulnerability window (10 min after cramp)
+  const timeSinceCramp = gameMinute - player.lastCrampMinute;
+  player.postCrampWindow = timeSinceCramp < 10;
+  
+  // Wall hits: track each time player hits 85%+ (5 min cooldown between hits)
   if (player.fatigue >= 85) {
-    if (!player.wallHits) player.wallHits = [];
     const lastHit = player.wallHits[player.wallHits.length - 1];
-    // Only register new wall hit if 5+ min since last one
     if (!lastHit || gameMinute - lastHit >= 5) {
       player.wallHits.push(gameMinute);
+      player.muscleDamage += 0.5; // Each wall hit adds damage
       addEvent(`⚠ ${player.id} hit the WALL (${player.wallHits.length}x) at ${gameMinute}'`, 'wall');
     }
   }
   
-  // Cramp risk: realistic 5-8% for exhausted players over 90 min
-  if (player.fatigue > 65) {
-    const wallHits = player.wallHits ? player.wallHits.length : 0;
-    const exposure = player.fatigueExposure || 0;
-    const crampChance = 0.002 * (player.fatigue / 100) * (1 + wallHits * 0.2) * (1 + exposure * 0.005);
+  // Cramp risk: scales with fatigue, wall hits, damage, and exposure
+  if (player.fatigue > 65 && !player.postCrampWindow) {
+    const wallHits = player.wallHits.length;
+    const damage = player.muscleDamage;
+    const exposure = player.fatigueExposure;
+    
+    // Base chance increases with each factor
+    const crampChance = 0.002 
+      * (player.fatigue / 100) 
+      * (1 + wallHits * 0.2) 
+      * (1 + damage * 0.1)
+      * (1 + exposure * 0.003);
+    
     if (Math.random() < crampChance) {
-      if (!player.cramps) player.cramps = 0;
       player.cramps++;
-      player.crampAt = gameMinute;
+      player.lastCrampMinute = gameMinute;
+      player.muscleDamage += 2.0; // Cramp causes significant damage
+      player.injuryMultiplier *= 1.5; // Each cramp increases injury susceptibility
       addEvent(`🦵 ${player.id} CRAMPED (${player.cramps}x) at ${gameMinute}'!`, 'cramp');
-      player.fatigue = Math.min(100, player.fatigue + 8);
-      player.postCramp = true;
+      player.fatigue = Math.min(100, player.fatigue + 8); // Immediate fatigue spike
     }
   }
   
-  // Injury risk: check only periodically, not every fatigue add
-  if (player.fatigue > 80 && Math.random() < 0.1) { // Only check 10% of the time
-    const wallHits = player.wallHits ? player.wallHits.length : 0;
-    const cramps = player.cramps || 0;
-    const postCramp = player.postCramp ? 1 : 0;
+  // Injury risk: check periodically with escalating factors
+  // Check frequency increases with damage
+  const checkChance = Math.min(0.3, 0.05 + player.muscleDamage * 0.01);
+  if (player.fatigue > 80 && Math.random() < checkChance) {
+    const wallHits = player.wallHits.length;
+    const cramps = player.cramps;
+    const damage = player.muscleDamage;
+    const multiplier = player.injuryMultiplier;
+    const inWindow = player.postCrampWindow ? 1 : 0;
     
-    // Realistic: ~20-30% injury rate for heavily targeted players over 90 min
+    // Injury chance calculation:
     // - Base: 0.05%
-    // - Per wall hit: +0.05%
-    // - Per cramp: +0.5%
-    // - Post-cramp window: +0.8%
-    const injuryChance = 0.0005 + (wallHits * 0.0005) + (cramps * 0.005) + (postCramp * 0.008);
+    // - Per wall hit: +0.05% (cumulative muscle fatigue)
+    // - Per cramp: +0.5% (acute muscle vulnerability)
+    // - Muscle damage score: +0.03% per damage unit
+    // - Post-cramp window (10 min): 3x multiplier
+    // - Injury multiplier: compounds with each cramp
+    const baseChance = 0.0005;
+    const wallContribution = wallHits * 0.0005;
+    const crampContribution = cramps * 0.005;
+    const damageContribution = damage * 0.0003;
+    const windowBonus = inWindow * 0.015; // +1.5% during post-cramp window
+    
+    const injuryChance = (baseChance + wallContribution + crampContribution + damageContribution + windowBonus) * multiplier;
     
     if (Math.random() < injuryChance) {
-      addEvent(`🚑 ${player.id} INJURY at ${gameMinute}' - MUST be subbed!`, 'injury');
+      // Determine injury type based on history
+      let injuryType;
+      if (cramps > 0 && player.postCrampWindow) {
+        injuryType = 'Muscle strain (post-cramp)';
+      } else if (cramps > 0) {
+        injuryType = 'Muscle strain (chronic)';
+      } else if (wallHits > 5) {
+        injuryType = 'Fatigue injury (cumulative)';
+      } else {
+        injuryType = 'Fatigue injury';
+      }
+      
+      addEvent(`🚑 ${player.id} INJURY at ${gameMinute}' - ${injuryType} - MUST be subbed!`, 'injury');
       player.fatigue = 100;
       player.injured = true;
-      player.injuryType = cramps > 0 ? 'Muscle strain (post-cramp)' : 'Fatigue injury';
-    }
-    
-    if (player.postCramp && gameMinute - (player.crampAt || 0) > 5) {
-      player.postCramp = false;
+      player.injuryType = injuryType;
+      player.injuryMinute = gameMinute;
     }
   }
 }
@@ -1692,8 +1732,10 @@ function resetSim() {
     p.id = origIds[i-1];
     p.fatigue = 0; p.sprints = 0; p.sprintDist = 0; p.totalDist = 0;
     p.targeted = false; p.subbed = false; p.subbed_in = null;
-    p.wallHits = []; p.cramps = 0; p.crampAt = null;
-    p.injured = false; p.injuryType = null; p.fatigueExposure = 0; p.postCramp = false;
+    p.wallHits = []; p.cramps = 0; p.muscleDamage = 0;
+    p.injured = false; p.injuryType = null; p.injuryMinute = null;
+    p.fatigueExposure = 0; p.lastCrampMinute = -100;
+    p.postCrampWindow = false; p.injuryMultiplier = 1.0;
     // Reset positions
     const positions = [[460,60],[460,160],[460,260],[460,360],[370,210],[370,130],[370,290],[310,60],[290,210],[310,360]];
     if (i > 0 && positions[i-1]) { p.x = positions[i-1][0]; p.y = positions[i-1][1]; }
