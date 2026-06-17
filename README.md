@@ -17,9 +17,10 @@ A tactical simulation that models physical attrition in soccer, showing how spec
 - Press Bait
 
 ### Pass Mechanics
-- **5 Pass Types**: Ground, Driven, Lobbed, Through, Long Ball
+- **6 Pass Types**: Ground, Driven, Lobbed, Through, Long Ball, Curved
 - **4 First Touch Options**: Forward, Backward, Lateral, Dummy
 - **Pass Success Probability** based on distance, pressure, and fatigue
+- **Curved Passes** with bezier trajectory (harder to execute)
 
 ### Defensive Tactics
 - **Offside Trap**: Step up together to catch attackers offside
@@ -30,6 +31,27 @@ A tactical simulation that models physical attrition in soccer, showing how spec
 - **Block Lanes**: Position in passing lanes
 - **Bait Run**: Show space then close it
 
+### Game Events
+- **Goal Scoring**: Close-range shots with probability model
+- **Throw-ins**: Ball out of bounds triggers reset
+- **Corner Kicks**: Attackers push forward, defenders pack the box
+- **Goal Kicks**: Goalkeeper restarts
+- **Possession Switching**: Automatic role change on interception
+
+### Team Shape
+- **Dynamic Formation**: Players maintain relational spacing
+- **Shape Pull**: Players pulled toward home positions
+- **Spacing Enforcement**: Minimum distance between teammates
+- **Ball-relative Shift**: Formation shifts with ball position
+
+### Analytics Dashboard
+- **Expected Goals (xG)**: Probability model based on distance, angle, fatigue
+- **Pass Maps**: Visual arrows showing pass patterns (last 50 passes)
+- **Distance Tracking**: Total distance per player
+- **Sprint Breakdown**: Sprint vs jog vs walk distance per player
+- **Shot Statistics**: Shots, shots on target, corners, throw-ins
+- **Possession Percentage**: Time-based possession tracking
+
 ### Fatigue Model
 - Individual player fatigue tracking
 - Sprint count and distance
@@ -38,11 +60,16 @@ A tactical simulation that models physical attrition in soccer, showing how spec
 - Substitution model (5 subs, 20% fatigue on entry)
 
 ### Visual Features
+- **Ball Holder Highlight**: Pulsing yellow ring on player with ball
+- **Pass Map Overlay**: Faded arrows showing pass patterns
+- **Game State Overlay**: Shows goals, throw-ins, corners, goal kicks
+- **Dynamic Offside Line**: Adjusts based on ball position
 - Real-time pass visualization
 - Dummies shown as blue dashed lines
 - Offside line indicator
 - Rest defense shape indicator
 - Color-coded stamina bars
+- Score display (goalsA - goalsB)
 
 ## How to Use
 

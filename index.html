@@ -127,6 +127,19 @@
     <div class="stats-row"><span class="stat-label">Ball Holder:</span><span class="stat-value" id="stat-ballHolder">None</span></div>
     <div class="stats-row"><span class="stat-label">Score:</span><span class="stat-value" id="stat-score">0 - 0</span></div>
 
+    <h2 style="margin-top:12px; font-size:0.9em;">Analytics</h2>
+    <div class="stats-row"><span class="stat-label">xG Team A:</span><span class="stat-value" id="stat-xgA">0.00</span></div>
+    <div class="stats-row"><span class="stat-label">xG Team B:</span><span class="stat-value" id="stat-xgB">0.00</span></div>
+    <div class="stats-row"><span class="stat-label">Shots Team A:</span><span class="stat-value" id="stat-shotsA">0 (0 on target)</span></div>
+    <div class="stats-row"><span class="stat-label">Shots Team B:</span><span class="stat-value" id="stat-shotsB">0 (0 on target)</span></div>
+    <div class="stats-row"><span class="stat-label">Corners Team A:</span><span class="stat-value" id="stat-cornersA">0</span></div>
+    <div class="stats-row"><span class="stat-label">Corners Team B:</span><span class="stat-value" id="stat-cornersB">0</span></div>
+    <div class="stats-row"><span class="stat-label">Throw-ins A:</span><span class="stat-value" id="stat-throwinsA">0</span></div>
+    <div class="stats-row"><span class="stat-label">Throw-ins B:</span><span class="stat-value" id="stat-throwinsB">0</span></div>
+    <div class="stats-row"><span class="stat-label">Possession %:</span><span class="stat-value" id="stat-posPct">50% - 50%</span></div>
+    <div class="stats-row"><span class="stat-label">Total Distance A:</span><span class="stat-value" id="stat-distA">0m</span></div>
+    <div class="stats-row"><span class="stat-label">Total Distance B:</span><span class="stat-value" id="stat-distB">0m</span></div>
+
     <div class="sub-panel">
       <h3>Substitutions (Team B): <span id="sub-count">5</span>/5 remaining</h3>
       <div id="sub-buttons"></div>
@@ -217,6 +230,24 @@ let ballHolder = null;
 let possessionChanges = 0;
 let goalsA = 0;
 let goalsB = 0;
+
+// Analytics tracking
+let xG_A = 0;
+let xG_B = 0;
+let shotsA = 0;
+let shotsB = 0;
+let shotsOnTargetA = 0;
+let shotsOnTargetB = 0;
+let cornersA = 0;
+let cornersB = 0;
+let throwInsA = 0;
+let throwInsB = 0;
+let foulsA = 0;
+let foulsB = 0;
+let passMapData = { A: [], B: [] }; // {fromX, fromY, toX, toY, success, team}
+let playerDistanceLog = {}; // per-player distance tracking
+let possessionTimeA = 0;
+let possessionTimeB = 0;
 
 // Team shape home positions (4-3-3)
 const teamAShape = [
@@ -651,6 +682,7 @@ function executePass(from, to, passType, touchDir) {
   if (success) {
     successfulPasses++;
     addPassLine(from, to, passType, true);
+    passMapData[possession].push({ fromX: from.x, fromY: from.y, toX: to.x, toY: to.y, success: true, team: possession });
     
     const touch = firstTouch(to, touchDir, defenders);
     ballHolder = to;
@@ -671,6 +703,7 @@ function executePass(from, to, passType, touchDir) {
   } else {
     interceptedPasses++;
     addPassLine(from, to, passType, false);
+    passMapData[possession].push({ fromX: from.x, fromY: from.y, toX: to.x, toY: to.y, success: false, team: possession });
     
     possession = possession === 'A' ? 'B' : 'A';
     possessionChanges++;
@@ -696,37 +729,56 @@ function executePass(from, to, passType, touchDir) {
 }
 
 function checkGoalOpportunity(player) {
-  // Check if player is near the goal and has a good chance to score
   const goalX = possession === 'A' ? PITCH.x + PITCH.w - 30 : PITCH.x + 30;
   const goalY = PITCH.y + PITCH.h / 2;
   const distToGoal = dist(player, {x: goalX, y: goalY});
   
   if (distToGoal < 70) {
-    // Close to goal — chance to score
+    // Calculate xG based on distance and angle
+    const xG = calculateXG(player, goalX, goalY, distToGoal);
+    
+    // Track shot
+    if (possession === 'A') { shotsA++; xG_A += xG; } else { shotsB++; xG_B += xG; }
+    
     const gk = (possession === 'A' ? teamB : teamA).find(p => p.pos === 'GK' && !p.subbed);
     const gkDist = gk ? dist(gk, player) : 100;
     
-    // Score chance based on distance, angle, and GK position
-    let scoreChance = 0.3;
-    if (distToGoal < 40) scoreChance = 0.5;
-    if (distToGoal < 25) scoreChance = 0.7;
-    if (gkDist > 50) scoreChance += 0.15;
-    
-    // Fatigue reduces finishing ability
+    let scoreChance = xG;
+    if (gkDist > 50) scoreChance += 0.1;
     scoreChance -= player.fatigue * 0.002;
+    
+    // On target vs off target
+    const onTarget = Math.random() < 0.6;
+    if (possession === 'A') { if (onTarget) shotsOnTargetA++; } else { if (onTarget) shotsOnTargetB++; }
     
     if (Math.random() < scoreChance) {
       goalScored(player);
     } else {
-      addEvent(`Shot saved! ${player.pos} denied by GK`, 'shot');
-      // Ball goes to GK or out for corner/goal kick
-      if (Math.random() > 0.5) {
-        triggerGoalKick();
-      } else {
-        triggerCornerKick();
-      }
+      addEvent(`Shot ${onTarget ? 'saved' : 'off target'}! ${player.pos} xG: ${xG.toFixed(2)}`, 'shot');
+      if (Math.random() > 0.5) triggerGoalKick();
+      else triggerCornerKick();
     }
   }
+}
+
+function calculateXG(player, goalX, goalY, distToGoal) {
+  // xG model based on distance, angle, and position
+  let xG = 0;
+  
+  // Distance factor (closer = higher xG)
+  if (distToGoal < 20) xG = 0.7;
+  else if (distToGoal < 35) xG = 0.45;
+  else if (distToGoal < 50) xG = 0.25;
+  else xG = 0.1;
+  
+  // Angle factor (central = better)
+  const angle = Math.abs(player.y - goalY) / (PITCH.h / 2);
+  xG *= (1 - angle * 0.3);
+  
+  // Body position factor (fatigue reduces quality)
+  xG *= (1 - player.fatigue * 0.003);
+  
+  return Math.max(0.02, Math.min(0.85, xG));
 }
 
 function goalScored(scorer) {
@@ -743,16 +795,16 @@ function goalScored(scorer) {
 
 function triggerThrowIn() {
   gameState = 'throw_in';
-  gameStateTimer = 90; // 1.5 seconds
+  gameStateTimer = 90;
   throwInTeam = possession;
   
-  // Find where ball went out (top or bottom)
   const side = ball.y < PITCH.y + 20 ? 'top' : 'bottom';
   throwInPos = { 
     x: Math.max(PITCH.x + 20, Math.min(PITCH.x + PITCH.w - 20, ball.x)), 
     y: side === 'top' ? PITCH.y + 15 : PITCH.y + PITCH.h - 15 
   };
   
+  if (possession === 'A') throwInsA++; else throwInsB++;
   addEvent(`📍 Throw-in for Team ${possession}`, 'throwin');
 }
 
@@ -775,12 +827,10 @@ function triggerCornerKick() {
   gameState = 'corner_kick';
   gameStateTimer = 150;
   
-  // Determine which corner based on last attacker
   const lastAttacker = ballHolder || teamA[teamA.length - 1];
   cornerKickSide = lastAttacker.y < PITCH.y + PITCH.h / 2 ? 'top' : 'bottom';
   cornerKickTeam = possession;
   
-  // Ball goes to corner
   const cornerX = possession === 'A' ? PITCH.x + PITCH.w - 10 : PITCH.x + 10;
   const cornerY = cornerKickSide === 'top' ? PITCH.y + 10 : PITCH.y + PITCH.h - 10;
   
@@ -788,7 +838,7 @@ function triggerCornerKick() {
   ball.y = cornerY;
   ballHolder = null;
   
-  // Reset positions for corner kick
+  if (possession === 'A') cornersA++; else cornersB++;
   resetPositionsForCorner();
   
   addEvent(`🚩 Corner kick for Team ${possession} (${cornerKickSide})`, 'corner');
@@ -1783,6 +1833,32 @@ function update(dt) {
   maintainTeamShape(teamA, teamAShape, isTeamAAttacking);
   maintainTeamShape(teamB, teamBShape, !isTeamAAttacking);
   
+  // Track possession time
+  if (gameState === 'playing') {
+    if (possession === 'A') possessionTimeA++; else possessionTimeB++;
+  }
+  
+  // Track player distances
+  allPlayers.forEach(p => {
+    if (p.subbed || p.pos === 'GK') return;
+    if (!playerDistanceLog[p.id]) playerDistanceLog[p.id] = { total: 0, sprint: 0, jog: 0, walk: 0 };
+    const lastPos = playerDistanceLog[p.id].lastPos || { x: p.x, y: p.y };
+    const moved = dist(p, lastPos);
+    if (moved > 0.5) {
+      playerDistanceLog[p.id].total += moved;
+      // Classify movement type
+      if (p.sprints > (playerDistanceLog[p.id].lastSprints || 0)) {
+        playerDistanceLog[p.id].sprint += moved;
+      } else if (moved > 1.5) {
+        playerDistanceLog[p.id].jog += moved;
+      } else {
+        playerDistanceLog[p.id].walk += moved;
+      }
+      playerDistanceLog[p.id].lastSprints = p.sprints;
+    }
+    playerDistanceLog[p.id].lastPos = { x: p.x, y: p.y };
+  });
+
   // Slight jockeying movement
   const allPlayers = [...teamA, ...teamB];
   allPlayers.forEach(p => {
@@ -1881,6 +1957,31 @@ function render() {
   ctx.stroke();
   ctx.strokeRect(PITCH.x, PITCH.y + PITCH.h/2 - 70, 60, 140);
   ctx.strokeRect(PITCH.x + PITCH.w - 60, PITCH.y + PITCH.h/2 - 70, 60, 140);
+
+  // Pass map visualization (faded arrows showing pass patterns)
+  if (passMapData.A.length > 5 || passMapData.B.length > 5) {
+    ctx.globalAlpha = 0.15;
+    ['A', 'B'].forEach(team => {
+      const color = team === 'A' ? '#2196F3' : '#f44336';
+      passMapData[team].slice(-50).forEach(p => { // Show last 50 passes
+        ctx.strokeStyle = p.success ? color : '#666';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(p.fromX, p.fromY);
+        ctx.lineTo(p.toX, p.toY);
+        ctx.stroke();
+        // Arrow head
+        const angle = Math.atan2(p.toY - p.fromY, p.toX - p.fromX);
+        ctx.beginPath();
+        ctx.moveTo(p.toX, p.toY);
+        ctx.lineTo(p.toX - 5 * Math.cos(angle - 0.4), p.toY - 5 * Math.sin(angle - 0.4));
+        ctx.moveTo(p.toX, p.toY);
+        ctx.lineTo(p.toX - 5 * Math.cos(angle + 0.4), p.toY - 5 * Math.sin(angle + 0.4));
+        ctx.stroke();
+      });
+    });
+    ctx.globalAlpha = 1;
+  }
 
   // Pass lines
   passLines.forEach(line => {
@@ -2119,7 +2220,8 @@ function renderPlayerCards() {
         <div class="player-pos">${p.pos}${subInfo} ${wallInfo}</div>
         <div class="fatigue-bar"><div class="fatigue-fill" style="width:${p.fatigue}%;background:${fColor}"></div></div>
         <div class="fatigue-label"><span>${Math.round(p.fatigue)}% fatigue</span><span>${p.sprints} sprints</span></div>
-      </div>`;
+      ${playerDistanceLog[p.id] ? `<div style="font-size:0.6em;color:#666;margin-top:2px">🏃 ${Math.round(playerDistanceLog[p.id].sprint)}m sprint · ${Math.round(playerDistanceLog[p.id].jog)}m jog · ${Math.round(playerDistanceLog[p.id].walk)}m walk</div>` : ''}
+    </div>`;
   });
   container.innerHTML = html;
 }
@@ -2165,6 +2267,30 @@ function updateStats() {
   document.getElementById('stat-ballHolder').textContent = ballHolder ? `${ballHolder.pos} (${ballHolder.id})` : 'None';
   document.getElementById('stat-score').textContent = `${goalsA} - ${goalsB}`;
   document.getElementById('stat-score').style.color = (goalsA + goalsB) > 0 ? '#ffcc00' : '#fff';
+  
+  // Analytics
+  document.getElementById('stat-xgA').textContent = xG_A.toFixed(2);
+  document.getElementById('stat-xgB').textContent = xG_B.toFixed(2);
+  document.getElementById('stat-xgA').style.color = xG_A > xG_B ? '#44ff44' : '#fff';
+  document.getElementById('stat-xgB').style.color = xG_B > xG_A ? '#44ff44' : '#fff';
+  document.getElementById('stat-shotsA').textContent = `${shotsA} (${shotsOnTargetA} on target)`;
+  document.getElementById('stat-shotsB').textContent = `${shotsB} (${shotsOnTargetB} on target)`;
+  document.getElementById('stat-cornersA').textContent = cornersA;
+  document.getElementById('stat-cornersB').textContent = cornersB;
+  document.getElementById('stat-throwinsA').textContent = throwInsA;
+  document.getElementById('stat-throwinsB').textContent = throwInsB;
+  
+  // Possession %
+  const totalPoss = possessionTimeA + possessionTimeB || 1;
+  const posPctA = Math.round(possessionTimeA / totalPoss * 100);
+  document.getElementById('stat-posPct').textContent = `${posPctA}% - ${100 - posPctA}%`;
+  
+  // Distance tracking
+  let totalDistA = 0, totalDistB = 0;
+  teamA.forEach(p => { if (!p.subbed && p.pos !== 'GK') totalDistA += (playerDistanceLog[p.id]?.total || 0); });
+  teamB.forEach(p => { if (!p.subbed && p.pos !== 'GK') totalDistB += (playerDistanceLog[p.id]?.total || 0); });
+  document.getElementById('stat-distA').textContent = `${Math.round(totalDistA)}px`;
+  document.getElementById('stat-distB').textContent = `${Math.round(totalDistB)}px`;
   
   // Update legend
   const legendPos = document.getElementById('legend-possession');
@@ -2225,6 +2351,14 @@ function resetSim() {
   offsideLine = 0; offsideTrapActive = false; restDefenseShape = 'balanced';
   possession = 'A'; ballHolder = null;
   goalsA = 0; goalsB = 0;
+  xG_A = 0; xG_B = 0;
+  shotsA = 0; shotsB = 0;
+  shotsOnTargetA = 0; shotsOnTargetB = 0;
+  cornersA = 0; cornersB = 0;
+  throwInsA = 0; throwInsB = 0;
+  passMapData = { A: [], B: [] };
+  playerDistanceLog = {};
+  possessionTimeA = 0; possessionTimeB = 0;
   gameState = 'playing'; gameStateTimer = 0;
   passLines = []; dummyLines = []; wallWarnings = {}; events = [];
   subsRemaining = 5; subLog = [];
@@ -2278,9 +2412,16 @@ window.render_game_to_text = () => JSON.stringify({
   minute: gameMinute, second: Math.floor(gameSecond), pattern, possession, possessionChanges,
   ball, ballHolder: ballHolder ? ballHolder.id : null, gameState,
   goals: { A: goalsA, B: goalsB },
+  analytics: {
+    xG: { A: xG_A.toFixed(2), B: xG_B.toFixed(2) },
+    shots: { A: shotsA, onTargetA: shotsOnTargetA, B: shotsB, onTargetB: shotsOnTargetB },
+    corners: { A: cornersA, B: cornersB },
+    throwIns: { A: throwInsA, B: throwInsB },
+    possession: { A: Math.round(possessionTimeA / (possessionTimeA + possessionTimeB || 1) * 100) }
+  },
   sequences, totalPasses, subsRemaining,
-  teamA: teamA.filter(p=>!p.subbed).map(p => ({ id:p.id, pos:p.pos, fatigue:Math.round(p.fatigue), sprints:p.sprints })),
-  teamB: teamB.filter(p=>!p.subbed).map(p => ({ id:p.id, pos:p.pos, fatigue:Math.round(p.fatigue), sprints:p.sprints, targeted:!!p.targeted }))
+  teamA: teamA.filter(p=>!p.subbed).map(p => ({ id:p.id, pos:p.pos, fatigue:Math.round(p.fatigue), sprints:p.sprints, dist:Math.round(playerDistanceLog[p.id]?.total || 0) })),
+  teamB: teamB.filter(p=>!p.subbed).map(p => ({ id:p.id, pos:p.pos, fatigue:Math.round(p.fatigue), sprints:p.sprints, targeted:!!p.targeted, dist:Math.round(playerDistanceLog[p.id]?.total || 0) }))
 });
 window.advanceTime = (ms) => { for(let i=0;i<ms/16;i++) update(0.25); };
 </script>
