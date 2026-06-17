@@ -60,6 +60,12 @@
   .event-item.offside { color: #ffaa00; }
   .event-item.warning { color: #ff4444; }
   .event-item.sub { color: #ffaa00; }
+  .event-item.halftime { color: #00d4ff; font-weight: bold; background: rgba(0,212,255,0.1); }
+  .event-item.extra_time { color: #ff88ff; font-weight: bold; }
+  .event-item.var { color: #ff44ff; font-weight: bold; background: rgba(255,68,255,0.1); }
+  .event-item.penalty { color: #ffcc00; font-weight: bold; background: rgba(255,204,0,0.15); }
+  .event-item.card { color: #ffcc00; font-weight: bold; }
+  .event-item.free_kick { color: #88aaff; }
 </style>
 </head>
 <body>
@@ -74,6 +80,7 @@
       <button onclick="setSpeed(3)" id="btn-3x">3x</button>
       <button onclick="setSpeed(10)" id="btn-10x">10x</button>
       <button onclick="resetSim()">↺ Reset</button>
+      <button onclick="toggleExtraTime()" id="btn-extra" style="font-size:0.65em;padding:4px 6px;margin-left:4px">ET: OFF</button>
     </div>
     <div class="controls">
       <div style="font-size:0.8em;color:#aaa;margin-bottom:4px;">Attack Pattern:</div>
@@ -136,6 +143,12 @@
     <div class="stats-row"><span class="stat-label">Corners Team B:</span><span class="stat-value" id="stat-cornersB">0</span></div>
     <div class="stats-row"><span class="stat-label">Throw-ins A:</span><span class="stat-value" id="stat-throwinsA">0</span></div>
     <div class="stats-row"><span class="stat-label">Throw-ins B:</span><span class="stat-value" id="stat-throwinsB">0</span></div>
+    <div class="stats-row"><span class="stat-label">Fouls A:</span><span class="stat-value" id="stat-foulsA">0</span></div>
+    <div class="stats-row"><span class="stat-label">Fouls B:</span><span class="stat-value" id="stat-foulsB">0</span></div>
+    <div class="stats-row"><span class="stat-label">Yellow Cards A:</span><span class="stat-value" id="stat-yellowsA">0</span></div>
+    <div class="stats-row"><span class="stat-label">Yellow Cards B:</span><span class="stat-value" id="stat-yellowsB">0</span></div>
+    <div class="stats-row"><span class="stat-label">Red Cards A:</span><span class="stat-value" id="stat-redsA">0</span></div>
+    <div class="stats-row"><span class="stat-label">Red Cards B:</span><span class="stat-value" id="stat-redsB">0</span></div>
     <div class="stats-row"><span class="stat-label">Possession %:</span><span class="stat-value" id="stat-posPct">50% - 50%</span></div>
     <div class="stats-row"><span class="stat-label">Total Distance A:</span><span class="stat-value" id="stat-distA">0m</span></div>
     <div class="stats-row"><span class="stat-label">Total Distance B:</span><span class="stat-value" id="stat-distB">0m</span></div>
@@ -216,13 +229,36 @@ let ballCurvature = 0;
 let ballCurveControl = null; // {x, y} control point for curved passes
 
 // Game state machine
-let gameState = 'playing'; // playing, goal_scored, throw_in, corner_kick, goal_kick, free_kick
+let gameState = 'playing';
+// playing, goal_scored, throw_in, corner_kick, goal_kick, free_kick, halftime, extra_time_start, var_review, penalty, fulltime
 let gameStateTimer = 0;
 let goalScoredBy = null;
 let throwInTeam = null;
 let throwInPos = { x: 0, y: 0 };
 let cornerKickTeam = null;
-let cornerKickSide = null; // 'left' or 'right'
+let cornerKickSide = null;
+
+// Match structure
+let half = 1; // 1 or 2
+let injuryTimeFirst = 0;
+let injuryTimeSecond = 0;
+let extraTimeEnabled = false;
+let extraTimePeriod = 0; // 0 = none, 1 = ET first half, 2 = ET second half
+let injuryTimeClock = 0;
+let matchStarted = false;
+let matchEnded = false;
+
+// Yellow/Red cards
+let yellowCardsA = [];
+let yellowCardsB = [];
+let redCardsA = [];
+let redCardsB = [];
+let foulsA = 0;
+let foulsB = 0;
+
+// VAR
+let varReviews = [];
+let varPending = false;
 
 // Possession tracking
 let possession = 'A';
@@ -242,9 +278,7 @@ let cornersA = 0;
 let cornersB = 0;
 let throwInsA = 0;
 let throwInsB = 0;
-let foulsA = 0;
-let foulsB = 0;
-let passMapData = { A: [], B: [] }; // {fromX, fromY, toX, toY, success, team}
+let passMapData = { A: [], B: [] };
 let playerDistanceLog = {}; // per-player distance tracking
 let possessionTimeA = 0;
 let possessionTimeB = 0;
@@ -907,6 +941,235 @@ function resetPositionsForCorner() {
     }
   });
 }
+
+// ==================== YELLOW/RED CARDS ====================
+
+function awardCard(player, team, cardType) {
+  const cards = team === 'A' ? (cardType === 'yellow' ? yellowCardsA : redCardsA) : (cardType === 'yellow' ? yellowCardsB : redCardsB);
+  const existingYellow = (team === 'A' ? yellowCardsA : yellowCardsB).find(c => c.playerId === player.id);
+  
+  if (cardType === 'yellow') {
+    cards.push({ playerId: player.id, minute: gameMinute, reason: 'foul' });
+    addEvent(`🟨 YELLOW CARD: ${player.id} (Team ${team})`, 'card');
+    
+    // Second yellow = red
+    if (existingYellow) {
+      awardCard(player, team, 'red');
+      return;
+    }
+  } else if (cardType === 'red') {
+    cards.push({ playerId: player.id, minute: gameMinute, reason: 'second-yellow' });
+    addEvent(`🟥 RED CARD: ${player.id} (Team ${team}) - SENT OFF!`, 'card');
+    player.sentOff = true;
+    player.subbed = true;
+  }
+}
+
+function checkFoul(defender, attacker) {
+  // Chance of foul based on fatigue and proximity
+  const foulChance = 0.02 + defender.fatigue * 0.0005;
+  if (Math.random() < foulChance && dist(defender, attacker) < 30) {
+    const team = possession === 'A' ? 'B' : 'A';
+    if (team === 'A') foulsA++; else foulsB++;
+    
+    // VAR check for penalty area fouls
+    const inBox = (attacker.x > PITCH.x + PITCH.w - 80 && possession === 'A') || 
+                  (attacker.x < PITCH.x + 80 && possession === 'B');
+    
+    if (inBox && Math.random() < 0.4) {
+      triggerVAR('penalty_check', defender, attacker);
+    } else {
+      // Normal foul — free kick
+      triggerFreeKick(defender);
+      // Random card check
+      if (Math.random() < 0.08) {
+        awardCard(defender, team, 'yellow');
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+function triggerFreeKick(fouler) {
+  gameState = 'free_kick';
+  gameStateTimer = 120;
+  
+  // Ball at foul location
+  ball.x = Math.max(PITCH.x + 30, Math.min(PITCH.x + PITCH.w - 30, ball.x));
+  ball.y = Math.max(PITCH.y + 30, Math.min(PITCH.y + PITCH.h - 30, ball.y));
+  ballHolder = null;
+  
+  addEvent(`⚽ Free kick for Team ${possession}`, 'free_kick');
+}
+
+// ==================== HALFTIME ====================
+
+function triggerHalftime() {
+  gameState = 'halftime';
+  half = 2;
+  gameStateTimer = 300; // 5 seconds for halftime screen
+  
+  // Calculate injury time for first half
+  injuryTimeFirst = Math.floor(Math.random() * 4) + 1; // 1-4 minutes
+  
+  // Recovery during halftime — all players get meaningful rest
+  const allPlayers = [...teamA, ...teamB];
+  allPlayers.forEach(p => {
+    if (p.subbed) return;
+    // Recover 8-15% fatigue during halftime
+    const recovery = 8 + Math.random() * 7;
+    p.fatigue = Math.max(0, p.fatigue - recovery);
+    // Slight injury risk reduction
+    if (p.muscleDamage) p.muscleDamage *= 0.7;
+  });
+  
+  addEvent(`⏱️ HALFTIME (${goalsA}-${goalsB}) — Halftime recovery applied`, 'halftime');
+  addEvent(`⏱️ Injury time added: ${injuryTimeFirst} minutes`, 'halftime');
+}
+
+function triggerFulltime() {
+  matchEnded = true;
+  gameState = 'fulltime';
+  gameStateTimer = 600; // 10 seconds
+  
+  // Check if extra time needed
+  if (goalsA === goalsB && extraTimeEnabled) {
+    addEvent(`⏱️ MATCH DRAWN — Going to EXTRA TIME!`, 'fulltime');
+    setTimeout(() => {
+      extraTimePeriod = 1;
+      gameState = 'extra_time_start';
+      gameStateTimer = 180;
+      half = 3; // ET first half
+      gameMinute = 90;
+      matchEnded = false;
+    }, 3000);
+  } else {
+    addEvent(`⏱️ FULL TIME (${goalsA}-${goalsB})`, 'fulltime');
+  }
+}
+
+// ==================== EXTRA TIME ====================
+
+function triggerExtraTimeStart() {
+  gameState = 'playing';
+  gameMinute = 90;
+  
+  // Extra recovery before extra time
+  const allPlayers = [...teamA, ...teamB];
+  allPlayers.forEach(p => {
+    if (p.subbed) return;
+    p.fatigue = Math.max(0, p.fatigue - 5);
+  });
+  
+  addEvent(`⏱️ EXTRA TIME BEGINS — 30 minutes`, 'extra_time');
+  addEvent(`⏱️ Players recovered 5% fatigue`, 'extra_time');
+}
+
+function triggerExtraTimeHalf() {
+  // Switch to ET second half
+  extraTimePeriod = 2;
+  half = 4;
+  gameMinute = 105;
+  
+  // Brief recovery
+  const allPlayers = [...teamA, ...teamB];
+  allPlayers.forEach(p => {
+    if (p.subbed) return;
+    p.fatigue = Math.max(0, p.fatigue - 3);
+  });
+  
+  addEvent(`⏱️ EXTRA TIME SECOND HALF BEGINS`, 'extra_time');
+  resetPositions();
+}
+
+function triggerExtraTimeEnd() {
+  matchEnded = true;
+  gameState = 'fulltime';
+  gameStateTimer = 600;
+  
+  if (goalsA === goalsB) {
+    addEvent(`⏱️ EXTRA TIME ENDS (${goalsA}-${goalsB}) — PENALTIES!`, 'penalty');
+    gameState = 'penalty';
+    gameStateTimer = 300;
+  } else {
+    addEvent(`⏱️ EXTRA TIME ENDS (${goalsA}-${goalsB})`, 'fulltime');
+  }
+}
+
+// ==================== VAR ====================
+
+function triggerVAR(reviewType, defender, attacker) {
+  gameState = 'var_review';
+  gameStateTimer = 180; // 3 seconds
+  varPending = true;
+  
+  addEvent(`📺 VAR REVIEW: ${reviewType === 'penalty_check' ? 'Possible penalty' : 'Goal check'}`, 'var');
+  
+  // VAR decision after delay
+  setTimeout(() => {
+    varPending = false;
+    
+    if (reviewType === 'penalty_check') {
+      // 50/50 decision
+      if (Math.random() < 0.5) {
+        addEvent(`📺 VAR: PENALTY AWARDED!`, 'var');
+        triggerPenalty();
+      } else {
+        addEvent(`📺 VAR: No penalty — play on`, 'var');
+        gameState = 'playing';
+      }
+    } else if (reviewType === 'goal_check') {
+      // Goal stands most of the time
+      if (Math.random() < 0.85) {
+        addEvent(`📺 VAR: GOAL STANDS!`, 'var');
+      } else {
+        addEvent(`📺 VAR: GOAL DISALLOWED!`, 'var');
+        if (goalScoredBy === 'A') goalsA--; else goalsB--;
+      }
+      gameState = 'playing';
+    }
+  }, 2000);
+}
+
+function triggerPenalty() {
+  gameState = 'penalty';
+  gameStateTimer = 180;
+  
+  // Position ball at penalty spot
+  const penaltyX = possession === 'A' ? PITCH.x + PITCH.w - 100 : PITCH.x + 100;
+  ball.x = penaltyX;
+  ball.y = PITCH.y + PITCH.h / 2;
+  ballHolder = null;
+  
+  // Taker is the fouled player or a forward
+  const taker = teamA.find(p => p.pos === 'ST') || teamA[0];
+  
+  addEvent(`⚽ PENALTY KICK for Team ${possession}`, 'penalty');
+  
+  // Score the penalty
+  setTimeout(() => {
+    const saved = Math.random() < 0.25; // 75% conversion rate
+    if (!saved) {
+      goalScored(taker);
+      addEvent(`⚽ PENALTY SCORED! (${goalsA}-${goalsB})`, 'goal');
+    } else {
+      addEvent(`🧤 PENALTY SAVED!`, 'shot');
+      triggerGoalKick();
+    }
+  }, 1500);
+}
+
+// ==================== INJURY TIME ====================
+
+function getInjuryTime() {
+  if (half === 1) return injuryTimeFirst;
+  if (half === 2) return injuryTimeSecond;
+  if (half === 3 || half === 4) return Math.floor(Math.random() * 3) + 1; // ET injury time
+  return 0;
+}
+
+// ==================== PLAY DUMMY ====================
 
 function playDummy(from, to) {
   dummiesPlayed++;
@@ -1749,7 +2012,30 @@ const passFunctions = {
 function update(dt) {
   gameSecond += dt * speed;
   if (gameSecond >= 60) { gameSecond -= 60; gameMinute++; }
-  if (gameMinute >= 90) { gameMinute = 90; speed = 0; showSummary(); }
+  
+  // Halftime check (45' + injury time)
+  if (half === 1 && gameMinute >= 45 + injuryTimeFirst && gameState === 'playing') {
+    triggerHalftime();
+    return;
+  }
+  
+  // Extra time half switch (105')
+  if (half === 3 && gameMinute >= 105 && gameState === 'playing') {
+    triggerExtraTimeHalf();
+    return;
+  }
+  
+  // Extra time end (120')
+  if (half === 4 && gameMinute >= 120 && gameState === 'playing') {
+    triggerExtraTimeEnd();
+    return;
+  }
+  
+  // Fulltime check (90' + injury time, no extra time)
+  if (half === 2 && gameMinute >= 90 + injuryTimeSecond && gameState === 'playing' && !extraTimeEnabled) {
+    triggerFulltime();
+    return;
+  }
 
   // Animate ball movement with curvature support
   if (ballMoving) {
@@ -1819,11 +2105,28 @@ function update(dt) {
   if (gameState !== 'playing') {
     gameStateTimer--;
     if (gameStateTimer <= 0) {
-      gameState = 'playing';
-      ballHolder = null;
-      // After set piece, give ball to appropriate team
-      if (gameState === 'throw_in' && throwInTeam) {
-        possession = throwInTeam;
+      if (gameState === 'halftime') {
+        gameState = 'playing';
+        ball.x = PITCH.x + PITCH.w / 2;
+        ball.y = PITCH.y + PITCH.h / 2;
+        ballHolder = null;
+        possession = 'B'; // Team B kicks off second half
+        injuryTimeSecond = Math.floor(Math.random() * 5) + 1;
+        addEvent(`⏱️ SECOND HALF BEGINS — Injury time added: ${injuryTimeSecond} mins`, 'halftime');
+        resetPositions();
+      } else if (gameState === 'extra_time_start') {
+        triggerExtraTimeStart();
+      } else if (gameState === 'var_review') {
+        gameState = 'playing';
+      } else if (gameState === 'fulltime') {
+        speed = 0;
+        showSummary();
+      } else {
+        gameState = 'playing';
+        ballHolder = null;
+        if (gameState === 'throw_in' && throwInTeam) {
+          possession = throwInTeam;
+        }
       }
     }
   }
@@ -1877,6 +2180,17 @@ function update(dt) {
   // Run defensive pressing for the team without the ball (only during play)
   if (gameState === 'playing' && !ballMoving && Math.random() > 0.5) {
     defensivePressing();
+  }
+  
+  // Check for fouls during defensive pressing
+  if (gameState === 'playing' && !ballMoving && Math.random() < 0.05) {
+    const defenders = (possession === 'A' ? teamB : teamA).filter(p => !p.subbed && p.pos !== 'GK');
+    const attackers = (possession === 'A' ? teamA : teamB).filter(p => !p.subbed && p.pos !== 'GK');
+    if (defenders.length > 0 && attackers.length > 0) {
+      const nearestDef = defenders.reduce((n, d) => dist(d, ball) < dist(n, ball) ? d : n, defenders[0]);
+      const nearestAtt = attackers.reduce((n, a) => dist(a, ball) < dist(n, ball) ? a : n, attackers[0]);
+      checkFoul(nearestDef, nearestAtt);
+    }
   }
   
   // Update offside line dynamically based on ball position
@@ -2195,6 +2509,12 @@ function render() {
     else if (gameState === 'throw_in') stateText = `📍 Throw-in`;
     else if (gameState === 'corner_kick') stateText = `🚩 Corner Kick`;
     else if (gameState === 'goal_kick') stateText = `🧤 Goal Kick`;
+    else if (gameState === 'free_kick') stateText = `⚽ Free Kick`;
+    else if (gameState === 'halftime') stateText = `⏱️ HALFTIME`;
+    else if (gameState === 'extra_time_start') stateText = `⏱️ EXTRA TIME`;
+    else if (gameState === 'var_review') stateText = `📺 VAR REVIEW`;
+    else if (gameState === 'penalty') stateText = `⚽ PENALTY`;
+    else if (gameState === 'fulltime') stateText = matchEnded ? `⏱️ FULL TIME` : `⏱️ FULL TIME`;
     
     ctx.fillText(stateText, W/2, H/2 - 10);
     ctx.font = '16px sans-serif';
@@ -2279,6 +2599,16 @@ function updateStats() {
   document.getElementById('stat-cornersB').textContent = cornersB;
   document.getElementById('stat-throwinsA').textContent = throwInsA;
   document.getElementById('stat-throwinsB').textContent = throwInsB;
+  document.getElementById('stat-foulsA').textContent = foulsA;
+  document.getElementById('stat-foulsB').textContent = foulsB;
+  document.getElementById('stat-yellowsA').textContent = yellowCardsA.length;
+  document.getElementById('stat-yellowsB').textContent = yellowCardsB.length;
+  document.getElementById('stat-yellowsA').style.color = yellowCardsA.length > 0 ? '#ffcc00' : '#fff';
+  document.getElementById('stat-yellowsB').style.color = yellowCardsB.length > 0 ? '#ffcc00' : '#fff';
+  document.getElementById('stat-redsA').textContent = redCardsA.length;
+  document.getElementById('stat-redsB').textContent = redCardsB.length;
+  document.getElementById('stat-redsA').style.color = redCardsA.length > 0 ? '#ff4444' : '#fff';
+  document.getElementById('stat-redsB').style.color = redCardsB.length > 0 ? '#ff4444' : '#fff';
   
   // Possession %
   const totalPoss = possessionTimeA + possessionTimeB || 1;
@@ -2337,6 +2667,14 @@ function setSpeed(s) {
   if (s === 10) document.getElementById('btn-10x').classList.add('active');
 }
 
+function toggleExtraTime() {
+  extraTimeEnabled = !extraTimeEnabled;
+  const btn = document.getElementById('btn-extra');
+  btn.textContent = `ET: ${extraTimeEnabled ? 'ON' : 'OFF'}`;
+  btn.style.background = extraTimeEnabled ? '#44cc44' : '#0f3460';
+  btn.style.color = extraTimeEnabled ? '#000' : '#eee';
+}
+
 function setTempo(t) {
   tempo = t;
   document.querySelectorAll('[id^="tempo-"]').forEach(b => b.classList.remove('active'));
@@ -2360,6 +2698,13 @@ function resetSim() {
   playerDistanceLog = {};
   possessionTimeA = 0; possessionTimeB = 0;
   gameState = 'playing'; gameStateTimer = 0;
+  half = 1; injuryTimeFirst = 0; injuryTimeSecond = 0;
+  extraTimeEnabled = false; extraTimePeriod = 0;
+  yellowCardsA = []; yellowCardsB = [];
+  redCardsA = []; redCardsB = [];
+  foulsA = 0; foulsB = 0;
+  varReviews = []; varPending = false;
+  matchStarted = false; matchEnded = false;
   passLines = []; dummyLines = []; wallWarnings = {}; events = [];
   subsRemaining = 5; subLog = [];
   ballMoving = false; ballTarget = { x: 250, y: 210 }; ballElevation = 0; ballProgress = 0;
