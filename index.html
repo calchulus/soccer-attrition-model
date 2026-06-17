@@ -75,8 +75,9 @@
     <canvas id="field" width="600" height="420"></canvas>
     <div class="game-clock" id="clock">00:00</div>
     <div class="speed-controls">
+      <button onclick="startMatch()" id="btn-start" style="background:#44cc44;color:#000;font-weight:bold">▶ START</button>
       <button onclick="setSpeed(0)" id="btn-pause">⏸ Pause</button>
-      <button onclick="setSpeed(1)" id="btn-1x" class="active">1x</button>
+      <button onclick="setSpeed(1)" id="btn-1x">1x</button>
       <button onclick="setSpeed(3)" id="btn-3x">3x</button>
       <button onclick="setSpeed(10)" id="btn-10x">10x</button>
       <button onclick="resetSim()">↺ Reset</button>
@@ -536,7 +537,7 @@ function moveToward(player, tx, ty, spd) {
 function maintainTeamShape(team, shape, attacking) {
   // Pull players back toward their home shape positions
   // Stronger pull when further from home, weaker when attacking
-  const pullStrength = attacking ? 0.008 : 0.015;
+  const pullStrength = attacking ? 0.012 : 0.02;
   team.forEach((p, i) => {
     if (p.subbed || p.pos === 'GK' || !shape[i]) return;
     const home = shape[i];
@@ -545,17 +546,20 @@ function maintainTeamShape(team, shape, attacking) {
     const targetX = home.homeX + ballShiftX;
     const targetY = home.homeY;
     const d = dist(p, {x: targetX, y: targetY});
-    if (d > 20) {
-      p.x = lerp(p.x, targetX, pullStrength);
-      p.y = lerp(p.y, targetY, pullStrength);
+    // Stronger pull when further from home position
+    const distFactor = Math.min(1, d / 80);
+    const adjustedPull = pullStrength * (0.5 + distFactor * 0.5);
+    if (d > 10) {
+      p.x = lerp(p.x, targetX, adjustedPull);
+      p.y = lerp(p.y, targetY, adjustedPull);
     }
     // Keep minimum spacing from teammates
     team.forEach((other, j) => {
       if (i === j || other.subbed || other.pos === 'GK') return;
       const spacing = dist(p, other);
-      if (spacing < 35 && spacing > 0) {
-        const pushX = (p.x - other.x) / spacing * 0.5;
-        const pushY = (p.y - other.y) / spacing * 0.5;
+      if (spacing < 30 && spacing > 0) {
+        const pushX = (p.x - other.x) / spacing * 0.8;
+        const pushY = (p.y - other.y) / spacing * 0.8;
         p.x += pushX;
         p.y += pushY;
       }
@@ -2675,6 +2679,16 @@ function toggleExtraTime() {
   btn.style.color = extraTimeEnabled ? '#000' : '#eee';
 }
 
+function startMatch() {
+  matchStarted = true;
+  speed = 1;
+  document.getElementById('btn-start').textContent = '▶ PLAYING';
+  document.getElementById('btn-start').style.background = '#888';
+  document.getElementById('btn-start').disabled = true;
+  setSpeed(1);
+  addEvent('⚽ KICK OFF!', 'goal');
+}
+
 function setTempo(t) {
   tempo = t;
   document.querySelectorAll('[id^="tempo-"]').forEach(b => b.classList.remove('active'));
@@ -2711,6 +2725,13 @@ function resetSim() {
   ballCurvature = 0; ballCurveControl = null;
   bench.forEach(b => b.used = false);
   document.getElementById('summary-box').style.display = 'none';
+  // Reset start button
+  const startBtn = document.getElementById('btn-start');
+  if (startBtn) {
+    startBtn.textContent = '▶ START';
+    startBtn.style.background = '#44cc44';
+    startBtn.disabled = false;
+  }
   // Reset team B to original state
   const origIds = ['LB_B','CB_B1','CB_B2','RB_B','DM_B','CM_B1','CM_B2','LW_B','ST_B','RW_B'];
   teamB.forEach((p, i) => {
@@ -2737,7 +2758,7 @@ let lastDOMRender = 0;
 function gameLoop(now) {
   const dt = (now - lastTime) / 1000;
   lastTime = now;
-  if (speed > 0) update(dt * 15);
+  if (speed > 0 && matchStarted && !matchEnded) update(dt * 15);
   render();
   updateStats();
   // Throttle heavy DOM renders to every 500ms for stability
