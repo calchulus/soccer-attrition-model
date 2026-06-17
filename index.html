@@ -49,6 +49,17 @@
   .event-item.sub { color: #ffaa00; }
   .event-item.cramp { color: #ff88ff; }
   .event-item.injury { color: #ff0000; font-weight: bold; background: rgba(255,0,0,0.1); }
+  .event-item.goal { color: #ffcc00; font-weight: bold; background: rgba(255,204,0,0.15); }
+  .event-item.shot { color: #ff8800; }
+  .event-item.throwin { color: #88aaff; }
+  .event-item.corner { color: #ff88ff; }
+  .event-item.goal_kick { color: #88ffff; }
+  .event-item.intercept { color: #ff6666; }
+  .event-item.defense { color: #44cc44; }
+  .event-item.dummy { color: #aaaaff; }
+  .event-item.offside { color: #ffaa00; }
+  .event-item.warning { color: #ff4444; }
+  .event-item.sub { color: #ffaa00; }
 </style>
 </head>
 <body>
@@ -114,6 +125,7 @@
     <div class="stats-row"><span class="stat-label">Possession:</span><span class="stat-value" id="stat-possession">Team A</span></div>
     <div class="stats-row"><span class="stat-label">Possession Changes:</span><span class="stat-value" id="stat-posChanges">0</span></div>
     <div class="stats-row"><span class="stat-label">Ball Holder:</span><span class="stat-value" id="stat-ballHolder">None</span></div>
+    <div class="stats-row"><span class="stat-label">Score:</span><span class="stat-value" id="stat-score">0 - 0</span></div>
 
     <div class="sub-panel">
       <h3>Substitutions (Team B): <span id="sub-count">5</span>/5 remaining</h3>
@@ -180,18 +192,59 @@ const bench = [
   { id:'SUB5', pos:'FWD', color:'#ff8800', fatigue:0 },
 ];
 
-let ball = { x: 250, y: 210 };
+let ball = { x: 250, y: 210, drawX: 250, drawY: 210 };
 let ballTarget = { x: 250, y: 210 };
 let ballMoving = false;
 let ballSpeed = 0;
 let ballElevation = 0;
 let ballProgress = 0;
 let ballFrom = { x: 250, y: 210 };
+let ballCurvature = 0;
+let ballCurveControl = null; // {x, y} control point for curved passes
+
+// Game state machine
+let gameState = 'playing'; // playing, goal_scored, throw_in, corner_kick, goal_kick, free_kick
+let gameStateTimer = 0;
+let goalScoredBy = null;
+let throwInTeam = null;
+let throwInPos = { x: 0, y: 0 };
+let cornerKickTeam = null;
+let cornerKickSide = null; // 'left' or 'right'
 
 // Possession tracking
-let possession = 'A'; // 'A' or 'B' — which team has the ball
-let ballHolder = null; // player object currently holding the ball
+let possession = 'A';
+let ballHolder = null;
 let possessionChanges = 0;
+let goalsA = 0;
+let goalsB = 0;
+
+// Team shape home positions (4-3-3)
+const teamAShape = [
+  { pos: 'GK', homeX: 60, homeY: 210 },
+  { pos: 'LB', homeX: 140, homeY: 60 },
+  { pos: 'CB', homeX: 140, homeY: 160 },
+  { pos: 'CB', homeX: 140, homeY: 260 },
+  { pos: 'RB', homeX: 140, homeY: 360 },
+  { pos: 'CM', homeX: 250, homeY: 120 },
+  { pos: 'CM', homeX: 250, homeY: 210 },
+  { pos: 'CM', homeX: 250, homeY: 300 },
+  { pos: 'LW', homeX: 380, homeY: 60 },
+  { pos: 'ST', homeX: 400, homeY: 210 },
+  { pos: 'RW', homeX: 380, homeY: 360 },
+];
+const teamBShape = [
+  { pos: 'GK', homeX: 540, homeY: 210 },
+  { pos: 'LB', homeX: 460, homeY: 60 },
+  { pos: 'CB', homeX: 460, homeY: 160 },
+  { pos: 'CB', homeX: 460, homeY: 260 },
+  { pos: 'RB', homeX: 460, homeY: 360 },
+  { pos: 'DM', homeX: 370, homeY: 210 },
+  { pos: 'CM', homeX: 370, homeY: 130 },
+  { pos: 'CM', homeX: 370, homeY: 290 },
+  { pos: 'LW', homeX: 310, homeY: 60 },
+  { pos: 'ST', homeX: 290, homeY: 210 },
+  { pos: 'RW', homeX: 310, homeY: 360 },
+];
 let gameMinute = 0;
 let gameSecond = 0;
 let speed = 1;
@@ -218,6 +271,7 @@ const PASS_TYPES = {
   lobbed: { speed: 0.7, aerial: true, successMod: -0.15, fatigueMod: 0.9, label: 'Lobbed' },
   through: { speed: 1.2, aerial: false, successMod: -0.05, fatigueMod: 1.3, label: 'Through' },
   long: { speed: 0.8, aerial: true, successMod: -0.2, fatigueMod: 0.8, label: 'Long Ball' },
+  curved: { speed: 0.9, aerial: false, successMod: -0.18, fatigueMod: 1.15, label: 'Curved' },
 };
 
 // First touch directions
@@ -397,18 +451,54 @@ function addFatigue(player, amount) {
 
 function dist(a, b) { return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2); }
 
+function lerp(a, b, t) { return a + (b - a) * t; }
+
 function moveToward(player, tx, ty, spd) {
   if (player.subbed) return;
   const d = dist(player, {x:tx, y:ty});
-  if (d < 2) return;
-  const dx = (tx - player.x) / d;
-  const dy = (ty - player.y) / d;
-  const moveSpeed = spd * (1 - player.fatigue * 0.003);
-  player.x += dx * moveSpeed;
-  player.y += dy * moveSpeed;
-  player.x = Math.max(PITCH.x + 10, Math.min(PITCH.x + PITCH.w - 10, player.x));
-  player.y = Math.max(PITCH.y + 10, Math.min(PITCH.y + PITCH.h - 10, player.y));
-  player.totalDist += moveSpeed;
+  if (d < 1) return;
+  // Smooth interpolation (lerp) instead of direct jump
+  const t = Math.min(1, (spd * (1 - player.fatigue * 0.003)) / Math.max(d, 1));
+  const smoothT = t * t * (3 - 2 * t); // smoothstep for natural feel
+  player.x = lerp(player.x, tx, smoothT);
+  player.y = lerp(player.y, ty, smoothT);
+  // Soft boundary enforcement
+  player.x = Math.max(PITCH.x + 15, Math.min(PITCH.x + PITCH.w - 15, player.x));
+  player.y = Math.max(PITCH.y + 15, Math.min(PITCH.y + PITCH.h - 15, player.y));
+  player.totalDist += Math.abs(smoothT * d);
+}
+
+function maintainTeamShape(team, shape, attacking) {
+  // Pull players back toward their home shape positions
+  // Stronger pull when further from home, weaker when attacking
+  const pullStrength = attacking ? 0.008 : 0.015;
+  team.forEach((p, i) => {
+    if (p.subbed || p.pos === 'GK' || !shape[i]) return;
+    const home = shape[i];
+    // Shift home position based on ball location for dynamic shape
+    const ballShiftX = (ball.x - PITCH.x - PITCH.w/2) * 0.15;
+    const targetX = home.homeX + ballShiftX;
+    const targetY = home.homeY;
+    const d = dist(p, {x: targetX, y: targetY});
+    if (d > 20) {
+      p.x = lerp(p.x, targetX, pullStrength);
+      p.y = lerp(p.y, targetY, pullStrength);
+    }
+    // Keep minimum spacing from teammates
+    team.forEach((other, j) => {
+      if (i === j || other.subbed || other.pos === 'GK') return;
+      const spacing = dist(p, other);
+      if (spacing < 35 && spacing > 0) {
+        const pushX = (p.x - other.x) / spacing * 0.5;
+        const pushY = (p.y - other.y) / spacing * 0.5;
+        p.x += pushX;
+        p.y += pushY;
+      }
+    });
+    // Keep in bounds
+    p.x = Math.max(PITCH.x + 15, Math.min(PITCH.x + PITCH.w - 15, p.x));
+    p.y = Math.max(PITCH.y + 15, Math.min(PITCH.y + PITCH.h - 15, p.y));
+  });
 }
 
 function addPassLine(from, to, type = 'ground', success = true) {
@@ -428,7 +518,7 @@ function addDummyLine(from, to) {
 
 function addEvent(text, type) {
   events.unshift({ text, type, time: `${String(gameMinute).padStart(2,'0')}:${String(Math.floor(gameSecond)).padStart(2,'0')}` });
-  if (events.length > 20) events.pop();
+  if (events.length > 25) events.pop();
 }
 
 // ==================== PASS MECHANICS ====================
@@ -518,20 +608,39 @@ function firstTouch(receiver, touchDir, defenders) {
 }
 
 function executePass(from, to, passType, touchDir) {
+  if (gameState !== 'playing') return false;
+  
   const defenders = (possession === 'A' ? teamB : teamA).filter(p => !p.subbed && p.pos !== 'GK');
-  const success = Math.random() < calcPassSuccess(from, to, passType, defenders);
   const type = PASS_TYPES[passType] || PASS_TYPES.ground;
+  
+  // Curved passes are harder
+  const curveMod = passType === 'curved' ? -0.15 : 0;
+  const success = Math.random() < calcPassSuccess(from, to, passType, defenders) + curveMod;
   
   totalPasses++;
   
-  // Animate ball movement with elevation
+  // Set ball animation
   ballFrom = { x: from.x, y: from.y };
   ballTarget = { x: to.x, y: to.y };
   ballMoving = true;
   ballProgress = 0;
   ballSpeed = type.speed * 10;
   
-  // Set elevation based on pass type
+  // Curved pass trajectory
+  if (passType === 'curved') {
+    // Curve perpendicular to pass direction, varying amount
+    const midX = (from.x + to.x) / 2;
+    const midY = (from.y + to.y) / 2;
+    const perpX = -(to.y - from.y) * 0.3 * (Math.random() > 0.5 ? 1 : -1);
+    const perpY = (to.x - from.x) * 0.3 * (Math.random() > 0.5 ? 1 : -1);
+    ballCurvature = 1;
+    ballCurveControl = { x: midX + perpX, y: midY + perpY };
+  } else {
+    ballCurvature = 0;
+    ballCurveControl = null;
+  }
+  
+  // Elevation
   const passDist = dist(from, to);
   if (type.aerial) {
     ballElevation = Math.min(25, passDist * 0.04);
@@ -543,34 +652,29 @@ function executePass(from, to, passType, touchDir) {
     successfulPasses++;
     addPassLine(from, to, passType, true);
     
-    // First touch
     const touch = firstTouch(to, touchDir, defenders);
-    
-    // Update ball holder
     ballHolder = to;
     
-    // Defender reactions based on pass type
     defenders.forEach(d => {
       const dDist = dist(d, to);
       if (dDist < 100) {
-        const reaction = type.aerial ? 'stepping' : 'pressing';
-        defenderReaction(d, ball, reaction);
+        defenderReaction(d, ball, type.aerial ? 'stepping' : 'pressing');
       } else if (dDist < 150) {
         defenderReaction(d, ball, 'tracking');
       }
     });
+    
+    // Check for goal opportunity
+    checkGoalOpportunity(to);
     
     return true;
   } else {
     interceptedPasses++;
     addPassLine(from, to, passType, false);
     
-    // Possession changes on interception
-    const oldPossession = possession;
     possession = possession === 'A' ? 'B' : 'A';
     possessionChanges++;
     
-    // Find the interceptor (closest defender to where ball landed)
     const interceptor = defenders.reduce((nearest, d) => {
       return dist(d, to) < dist(nearest, to) ? d : nearest;
     }, defenders[0]);
@@ -583,15 +687,175 @@ function executePass(from, to, passType, touchDir) {
       addEvent(`❌ ${type.label} pass intercepted! Possession → Team ${possession}`, 'intercept');
     }
     
-    // Defenders who intercepted get less fatigue
     defenders.forEach(d => {
-      if (dist(d, to) < 60) {
-        addFatigue(d, 0.1);
-      }
+      if (dist(d, to) < 60) addFatigue(d, 0.1);
     });
     
     return false;
   }
+}
+
+function checkGoalOpportunity(player) {
+  // Check if player is near the goal and has a good chance to score
+  const goalX = possession === 'A' ? PITCH.x + PITCH.w - 30 : PITCH.x + 30;
+  const goalY = PITCH.y + PITCH.h / 2;
+  const distToGoal = dist(player, {x: goalX, y: goalY});
+  
+  if (distToGoal < 70) {
+    // Close to goal — chance to score
+    const gk = (possession === 'A' ? teamB : teamA).find(p => p.pos === 'GK' && !p.subbed);
+    const gkDist = gk ? dist(gk, player) : 100;
+    
+    // Score chance based on distance, angle, and GK position
+    let scoreChance = 0.3;
+    if (distToGoal < 40) scoreChance = 0.5;
+    if (distToGoal < 25) scoreChance = 0.7;
+    if (gkDist > 50) scoreChance += 0.15;
+    
+    // Fatigue reduces finishing ability
+    scoreChance -= player.fatigue * 0.002;
+    
+    if (Math.random() < scoreChance) {
+      goalScored(player);
+    } else {
+      addEvent(`Shot saved! ${player.pos} denied by GK`, 'shot');
+      // Ball goes to GK or out for corner/goal kick
+      if (Math.random() > 0.5) {
+        triggerGoalKick();
+      } else {
+        triggerCornerKick();
+      }
+    }
+  }
+}
+
+function goalScored(scorer) {
+  if (possession === 'A') goalsA++; else goalsB++;
+  goalScoredBy = possession;
+  gameState = 'goal_scored';
+  gameStateTimer = 180; // 3 seconds at 60fps
+  
+  addEvent(`⚽ GOAL! Team ${possession} scores! (${goalsA}-${goalsB})`, 'goal');
+  
+  // Reset positions after goal
+  resetPositions();
+}
+
+function triggerThrowIn() {
+  gameState = 'throw_in';
+  gameStateTimer = 90; // 1.5 seconds
+  throwInTeam = possession;
+  
+  // Find where ball went out (top or bottom)
+  const side = ball.y < PITCH.y + 20 ? 'top' : 'bottom';
+  throwInPos = { 
+    x: Math.max(PITCH.x + 20, Math.min(PITCH.x + PITCH.w - 20, ball.x)), 
+    y: side === 'top' ? PITCH.y + 15 : PITCH.y + PITCH.h - 15 
+  };
+  
+  addEvent(`📍 Throw-in for Team ${possession}`, 'throwin');
+}
+
+function triggerGoalKick() {
+  gameState = 'goal_kick';
+  gameStateTimer = 120;
+  possession = possession === 'A' ? 'B' : 'A';
+  
+  const gk = (possession === 'A' ? teamA : teamB).find(p => p.pos === 'GK');
+  if (gk) {
+    ballHolder = gk;
+    ball.x = possession === 'A' ? PITCH.x + 40 : PITCH.x + PITCH.w - 40;
+    ball.y = PITCH.y + PITCH.h / 2;
+  }
+  
+  addEvent(`📍 Goal kick for Team ${possession}`, 'goal_kick');
+}
+
+function triggerCornerKick() {
+  gameState = 'corner_kick';
+  gameStateTimer = 150;
+  
+  // Determine which corner based on last attacker
+  const lastAttacker = ballHolder || teamA[teamA.length - 1];
+  cornerKickSide = lastAttacker.y < PITCH.y + PITCH.h / 2 ? 'top' : 'bottom';
+  cornerKickTeam = possession;
+  
+  // Ball goes to corner
+  const cornerX = possession === 'A' ? PITCH.x + PITCH.w - 10 : PITCH.x + 10;
+  const cornerY = cornerKickSide === 'top' ? PITCH.y + 10 : PITCH.y + PITCH.h - 10;
+  
+  ball.x = cornerX;
+  ball.y = cornerY;
+  ballHolder = null;
+  
+  // Reset positions for corner kick
+  resetPositionsForCorner();
+  
+  addEvent(`🚩 Corner kick for Team ${possession} (${cornerKickSide})`, 'corner');
+}
+
+function resetPositions() {
+  // Reset all players to their home shapes
+  teamA.forEach((p, i) => {
+    if (teamAShape[i]) {
+      p.x = teamAShape[i].homeX;
+      p.y = teamAShape[i].homeY;
+    }
+  });
+  teamB.forEach((p, i) => {
+    if (teamBShape[i]) {
+      p.x = teamBShape[i].homeX;
+      p.y = teamBShape[i].homeY;
+    }
+  });
+  ball.x = PITCH.x + PITCH.w / 2;
+  ball.y = PITCH.y + PITCH.h / 2;
+  ballHolder = null;
+}
+
+function resetPositionsForCorner() {
+  const attacking = possession;
+  const defending = possession === 'A' ? 'B' : 'A';
+  
+  // Defending team: pack the box
+  const defTeam = attacking === 'A' ? teamB : teamA;
+  const defShape = attacking === 'A' ? teamBShape : teamAShape;
+  const goalAreaX = attacking === 'A' ? PITCH.x + PITCH.w - 80 : PITCH.x + 80;
+  
+  defTeam.forEach((p, i) => {
+    if (p.pos === 'GK') {
+      // GK stays on line
+      p.x = attacking === 'A' ? PITCH.x + PITCH.w - 25 : PITCH.x + 25;
+      p.y = PITCH.y + PITCH.h / 2;
+    } else if (p.pos === 'CB' || p.pos === 'LB' || p.pos === 'RB') {
+      // Defenders pack the six-yard box
+      p.x = goalAreaX + (Math.random() - 0.5) * 40;
+      p.y = PITCH.y + PITCH.h / 2 + (i - 5) * 50;
+    } else {
+      // Midfielders/forwards stay back for counter
+      p.x = goalAreaX - 80;
+      p.y = PITCH.y + PITCH.h / 2 + (i - 5) * 40;
+    }
+  });
+  
+  // Attacking team: push forward into the box
+  const attTeam = attacking === 'A' ? teamA : teamB;
+  attTeam.forEach((p, i) => {
+    if (p.pos === 'GK') return;
+    if (p.pos === 'ST' || p.pos === 'LW' || p.pos === 'RW') {
+      // Forwards make runs into the box
+      p.x = goalAreaX + (Math.random() - 0.5) * 60;
+      p.y = PITCH.y + PITCH.h / 2 + (i - 8) * 45;
+    } else if (p.pos === 'CM' || p.pos === 'DM') {
+      // Midfielders edge of box
+      p.x = goalAreaX - 50;
+      p.y = PITCH.y + PITCH.h / 2 + (i - 5) * 55;
+    } else {
+      // Fullbacks stay back
+      p.x = PITCH.x + PITCH.w / 2;
+      p.y = p.y;
+    }
+  });
 }
 
 function playDummy(from, to) {
@@ -1088,7 +1352,14 @@ function normalPass() {
     applyDefensiveTactic(tactics[Math.floor(Math.random() * tactics.length)]);
   }
   
-  const passType = Math.random() > 0.7 ? 'driven' : 'ground';
+  // Mix of pass types: ground, driven, curved, through
+  const passRoll = Math.random();
+  let passType;
+  if (passRoll > 0.85) passType = 'curved';
+  else if (passRoll > 0.7) passType = 'driven';
+  else if (passRoll > 0.55) passType = 'through';
+  else passType = 'ground';
+  
   const touchDir = Math.random() > 0.5 ? 'forward' : 'lateral';
   
   executePass(from, to, passType, touchDir);
@@ -1430,7 +1701,7 @@ function update(dt) {
   if (gameSecond >= 60) { gameSecond -= 60; gameMinute++; }
   if (gameMinute >= 90) { gameMinute = 90; speed = 0; showSummary(); }
 
-  // Animate ball movement along pass path with elevation
+  // Animate ball movement with curvature support
   if (ballMoving) {
     const totalDist = dist(ballFrom, ballTarget);
     const moveAmount = (ballSpeed * dt * 60) / Math.max(totalDist, 1);
@@ -1439,15 +1710,29 @@ function update(dt) {
     if (ballProgress >= 1) {
       ball.x = ballTarget.x;
       ball.y = ballTarget.y;
+      ball.drawX = ball.x;
+      ball.drawY = ball.y;
       ballMoving = false;
       ballProgress = 0;
       ballElevation = 0;
+      ballCurvature = 0;
+      ballCurveControl = null;
     } else {
-      // Interpolate position along path
-      ball.x = ballFrom.x + (ballTarget.x - ballFrom.x) * ballProgress;
-      ball.y = ballFrom.y + (ballTarget.y - ballFrom.y) * ballProgress;
+      if (ballCurveControl) {
+        // Quadratic Bezier curve for curved passes
+        const t = ballProgress;
+        const mt = 1 - t;
+        ball.x = mt*mt*ballFrom.x + 2*mt*t*ballCurveControl.x + t*t*ballTarget.x;
+        ball.y = mt*mt*ballFrom.y + 2*mt*t*ballCurveControl.y + t*t*ballTarget.y;
+      } else {
+        // Linear interpolation for straight passes
+        ball.x = ballFrom.x + (ballTarget.x - ballFrom.x) * ballProgress;
+        ball.y = ballFrom.y + (ballTarget.y - ballFrom.y) * ballProgress;
+      }
       
-      // Elevation arc (parabolic: peaks at 50% progress)
+      // Smooth draw position
+      ball.drawX = lerp(ball.drawX || ball.x, ball.x, 0.4);
+      
       if (ballElevation > 0) {
         const arcHeight = ballElevation * Math.sin(ballProgress * Math.PI);
         ball.drawY = ball.y - arcHeight;
@@ -1455,34 +1740,66 @@ function update(dt) {
         ball.drawY = ball.y;
       }
     }
+  } else {
+    // Ball follows holder when not moving
+    if (ballHolder) {
+      ball.x = lerp(ball.x, ballHolder.x, 0.3);
+      ball.y = lerp(ball.y, ballHolder.y, 0.3);
+      ball.drawX = ball.x;
+      ball.drawY = ball.y;
+    }
+  }
+  
+  // Check out of bounds
+  if (gameState === 'playing' && !ballMoving) {
+    if (ball.y < PITCH.y || ball.y > PITCH.y + PITCH.h) {
+      triggerThrowIn();
+    }
+    // Goal line checks (only when near the goal)
+    if (ball.x < PITCH.x + 5 && (ball.y > PITCH.y + PITCH.h/2 - 70 && ball.y < PITCH.y + PITCH.h/2 + 70)) {
+      // Ball in goal area — could be a goal or goal kick
+      if (!ballHolder) triggerGoalKick();
+    }
+    if (ball.x > PITCH.x + PITCH.w - 5 && (ball.y > PITCH.y + PITCH.h/2 - 70 && ball.y < PITCH.y + PITCH.h/2 + 70)) {
+      if (!ballHolder) triggerGoalKick();
+    }
+  }
+  
+  // Game state timer
+  if (gameState !== 'playing') {
+    gameStateTimer--;
+    if (gameStateTimer <= 0) {
+      gameState = 'playing';
+      ballHolder = null;
+      // After set piece, give ball to appropriate team
+      if (gameState === 'throw_in' && throwInTeam) {
+        possession = throwInTeam;
+      }
+    }
   }
 
-  // Player shading toward ball (defensive positioning)
+  // Maintain team shape for both teams
+  const isTeamAAttacking = possession === 'A';
+  maintainTeamShape(teamA, teamAShape, isTeamAAttacking);
+  maintainTeamShape(teamB, teamBShape, !isTeamAAttacking);
+  
+  // Slight jockeying movement
   const allPlayers = [...teamA, ...teamB];
   allPlayers.forEach(p => {
-    if (p.subbed || p.pos === 'GK') return;
-    
-    // Shade toward ball side
+    if (p.subbed || p.pos === 'GK' || p === ballHolder) return;
+    // Subtle movement toward ball side
     const ballSide = ball.y > PITCH.y + PITCH.h / 2 ? 1 : -1;
-    const shadeY = p.y + ballSide * 2;
-    p.y += (shadeY - p.y) * 0.02;
-    
-    // Slight constant movement (jockeying)
-    p.x += (Math.random() - 0.5) * 0.5;
-    p.y += (Math.random() - 0.5) * 0.5;
-    
-    // Keep in bounds
-    p.x = Math.max(PITCH.x + 15, Math.min(PITCH.x + PITCH.w - 15, p.x));
-    p.y = Math.max(PITCH.y + 15, Math.min(PITCH.y + PITCH.h - 15, p.y));
+    p.y += (ballSide * 0.3);
+    p.x += (Math.random() - 0.5) * 0.3;
   });
 
-  // Run offensive movement for the team with the ball
-  if (!ballMoving && Math.random() > 0.5) {
+  // Run offensive movement for the team with the ball (only during play)
+  if (gameState === 'playing' && !ballMoving && Math.random() > 0.5) {
     offensiveRuns();
   }
   
-  // Run defensive pressing for the team without the ball
-  if (!ballMoving && Math.random() > 0.5) {
+  // Run defensive pressing for the team without the ball (only during play)
+  if (gameState === 'playing' && !ballMoving && Math.random() > 0.5) {
     defensivePressing();
   }
   
@@ -1501,19 +1818,19 @@ function update(dt) {
     });
   }
 
-  // Generate passes based on tempo (70-180 passes per 90 min)
-  // Slow: ~70, Normal: ~120, Fast: ~180 passes per game
-  const passesPerGame = tempo === 'slow' ? 70 : tempo === 'fast' ? 180 : 120;
-  // Use game time for pass interval, not real time
-  const passIntervalGameMs = (90 * 60 * 1000) / passesPerGame;
-  const currentGameMs = gameMinute * 60 * 1000 + gameSecond * 1000;
-  if (currentGameMs - lastPassGameTime > passIntervalGameMs) {
-    passFunctions[pattern]();
-    sequences++;
-    lastPassGameTime = currentGameMs;
-    lastPassTime = Date.now();
-    passLines = passLines.filter(l => Date.now() - l.time < 2000);
-    dummyLines = dummyLines.filter(l => Date.now() - l.time < 1500);
+  // Generate passes based on tempo (only during play)
+  if (gameState === 'playing') {
+    const passesPerGame = tempo === 'slow' ? 70 : tempo === 'fast' ? 180 : 120;
+    const passIntervalGameMs = (90 * 60 * 1000) / passesPerGame;
+    const currentGameMs = gameMinute * 60 * 1000 + gameSecond * 1000;
+    if (currentGameMs - lastPassGameTime > passIntervalGameMs) {
+      passFunctions[pattern]();
+      sequences++;
+      lastPassGameTime = currentGameMs;
+      lastPassTime = Date.now();
+      passLines = passLines.filter(l => Date.now() - l.time < 2000);
+      dummyLines = dummyLines.filter(l => Date.now() - l.time < 1500);
+    }
   }
 
   // Team A natural fatigue
@@ -1676,7 +1993,7 @@ function render() {
     }
   });
 
-  // Ball shadow (on ground)
+  // Ball shadow (on ground) - only when elevated
   if (ballElevation > 0 && ballMoving) {
     const shadowAlpha = Math.max(0.1, 0.4 - ballElevation * 0.015);
     const shadowSize = 5 + ballElevation * 0.3;
@@ -1686,23 +2003,38 @@ function render() {
     ctx.fill();
   }
   
-  // Ball (with elevation offset)
+  // Ball - use drawX/drawY for smooth rendering, clear properly
+  const drawX = ball.drawX || ball.x;
   const drawY = ball.drawY || ball.y;
   const ballSize = ballElevation > 0 ? 4 + ballElevation * 0.08 : 5;
-  ctx.beginPath();
-  ctx.arc(ball.x, drawY, ballSize, 0, Math.PI * 2);
-  ctx.fillStyle = '#fff';
-  ctx.fill();
-  ctx.strokeStyle = '#333';
-  ctx.lineWidth = 1;
-  ctx.stroke();
   
-  // Ball trail when moving fast
-  if (ballMoving && ballSpeed > 8) {
+  // Clear any ghost ball by drawing background first
+  if (ballHolder && !ballMoving) {
+    // Draw ball directly on holder
     ctx.beginPath();
-    ctx.arc(ball.x - (ball.x - ballFrom.x) * 0.05, drawY, ballSize - 1, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.arc(ballHolder.x, ballHolder.y, ballSize, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
     ctx.fill();
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  } else if (ballMoving) {
+    // Animated ball
+    ctx.beginPath();
+    ctx.arc(drawX, drawY, ballSize, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    
+    // Ball trail when moving fast
+    if (ballSpeed > 8) {
+      ctx.beginPath();
+      ctx.arc(drawX - (drawX - ballFrom.x) * 0.05, drawY, ballSize - 1, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+      ctx.fill();
+    }
   }
 
   // Offside line (dashed blue line)
@@ -1748,6 +2080,26 @@ function render() {
     ctx.textAlign = 'center';
     ctx.fillText('⚠ WALL', p.x, p.y - 18);
   });
+  
+  // Game state overlay
+  if (gameState !== 'playing') {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.textAlign = 'center';
+    
+    let stateText = '';
+    if (gameState === 'goal_scored') stateText = `⚽ GOAL! Team ${goalScoredBy}!`;
+    else if (gameState === 'throw_in') stateText = `📍 Throw-in`;
+    else if (gameState === 'corner_kick') stateText = `🚩 Corner Kick`;
+    else if (gameState === 'goal_kick') stateText = `🧤 Goal Kick`;
+    
+    ctx.fillText(stateText, W/2, H/2 - 10);
+    ctx.font = '16px sans-serif';
+    ctx.fillText(`${goalsA} - ${goalsB}`, W/2, H/2 + 20);
+    ctx.textAlign = 'left';
+  }
 }
 
 function renderPlayerCards() {
@@ -1811,6 +2163,8 @@ function updateStats() {
   document.getElementById('stat-possession').style.color = possession === 'A' ? '#2196F3' : '#f44336';
   document.getElementById('stat-posChanges').textContent = possessionChanges;
   document.getElementById('stat-ballHolder').textContent = ballHolder ? `${ballHolder.pos} (${ballHolder.id})` : 'None';
+  document.getElementById('stat-score').textContent = `${goalsA} - ${goalsB}`;
+  document.getElementById('stat-score').style.color = (goalsA + goalsB) > 0 ? '#ffcc00' : '#fff';
   
   // Update legend
   const legendPos = document.getElementById('legend-possession');
@@ -1870,9 +2224,12 @@ function resetSim() {
   runsNullified = 0; passesPrevented = 0; possessionChanges = 0;
   offsideLine = 0; offsideTrapActive = false; restDefenseShape = 'balanced';
   possession = 'A'; ballHolder = null;
+  goalsA = 0; goalsB = 0;
+  gameState = 'playing'; gameStateTimer = 0;
   passLines = []; dummyLines = []; wallWarnings = {}; events = [];
   subsRemaining = 5; subLog = [];
   ballMoving = false; ballTarget = { x: 250, y: 210 }; ballElevation = 0; ballProgress = 0;
+  ballCurvature = 0; ballCurveControl = null;
   bench.forEach(b => b.used = false);
   document.getElementById('summary-box').style.display = 'none';
   // Reset team B to original state
@@ -1891,7 +2248,7 @@ function resetSim() {
     if (i > 0 && positions[i-1]) { p.x = positions[i-1][0]; p.y = positions[i-1][1]; }
   });
   teamA.forEach(p => { p.fatigue = 0; p.sprints = 0; p.sprintDist = 0; p.totalDist = 0; });
-  ball = { x: 250, y: 210 };
+  ball = { x: 250, y: 210, drawX: 250, drawY: 210 };
   speed = 1;
   setSpeed(1);
 }
@@ -1919,7 +2276,8 @@ requestAnimationFrame(gameLoop);
 
 window.render_game_to_text = () => JSON.stringify({
   minute: gameMinute, second: Math.floor(gameSecond), pattern, possession, possessionChanges,
-  ball, ballHolder: ballHolder ? ballHolder.id : null,
+  ball, ballHolder: ballHolder ? ballHolder.id : null, gameState,
+  goals: { A: goalsA, B: goalsB },
   sequences, totalPasses, subsRemaining,
   teamA: teamA.filter(p=>!p.subbed).map(p => ({ id:p.id, pos:p.pos, fatigue:Math.round(p.fatigue), sprints:p.sprints })),
   teamB: teamB.filter(p=>!p.subbed).map(p => ({ id:p.id, pos:p.pos, fatigue:Math.round(p.fatigue), sprints:p.sprints, targeted:!!p.targeted }))
